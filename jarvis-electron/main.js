@@ -6,10 +6,11 @@ let mainWindow
 let pythonProcess
 
 function startPythonBackend() {
-  // FIX: path was '../jarvis_server.py' which is wrong when main.js is in the project root.
-  // Use __dirname to always resolve relative to this file.
-  const serverPath = path.join(__dirname, 'jarvis_server.py')
-  pythonProcess = spawn('python', [serverPath], { cwd: __dirname })
+  // FIX: jarvis_server.py lives in the project root, one level ABOVE
+  // jarvis-electron/, so resolve it relative to the parent directory.
+  const backendDir = path.join(__dirname, '..')
+  const serverPath = path.join(backendDir, 'jarvis_server.py')
+  pythonProcess = spawn('python', [serverPath], { cwd: backendDir })
 
   pythonProcess.stdout.on('data', (data) => {
     console.log(`Python: ${data}`)

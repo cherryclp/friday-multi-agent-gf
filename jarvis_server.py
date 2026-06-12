@@ -60,7 +60,10 @@ def ask():
             args=(avatar.speak_animation(min(len(reply) * 0.05, 8.0)),),
             daemon=True
         ).start()
-        return jsonify({"reply": reply})
+        # FIX: index.html checks data.needs_password to open the password modal,
+        # but the server never sent it, so the modal flow could never trigger.
+        from password_gate import prompt_message
+        return jsonify({"reply": reply, "needs_password": reply == prompt_message()})
     except Exception as e:
         return jsonify({"reply": f"[SYSTEM FAULT]: {str(e)}"})
 
@@ -74,10 +77,23 @@ def yap_poll():
 
 @app.route("/unlock", methods=["POST"])
 def unlock():
-    data = request.json
+    # FIX: index.html expects message / attempts_left / locked_out fields.
+    # Returning only {"success": ok} made the UI show "undefined".
+    from password_gate import (
+        is_locked_out, attempts_left,
+        correct_password_message, wrong_password_message,
+    )
+    data = request.json or {}
     pw   = data.get("password", "").strip()
     ok   = attempt_unlock(pw)
-    return jsonify({"success": ok})
+    if ok:
+        return jsonify({"success": True, "message": correct_password_message()})
+    return jsonify({
+        "success": False,
+        "message": wrong_password_message(attempts_left()),
+        "locked_out": is_locked_out(),
+        "attempts_left": attempts_left(),
+    })
 
 @app.route("/unlock_skip", methods=["POST"])
 def unlock_skip():
@@ -90,6 +106,17 @@ def locked_status():
     # It was missing entirely, causing a 404 and a JS exception in pwSubmit().
     from password_gate import is_locked_out, attempts_left
     return jsonify({
+        "locked_out": is_locked_out(),
+        "attempts_left": attempts_left()
+    })
+
+@app.route("/gate_status", methods=["GET"])
+def gate_status():
+    # FIX: index.html polls /gate_status to refresh the lock badge.
+    # The endpoint was missing, so every poll 404'd and the badge never updated.
+    from password_gate import is_unlocked, is_locked_out, attempts_left
+    return jsonify({
+        "unlocked": is_unlocked(),
         "locked_out": is_locked_out(),
         "attempts_left": attempts_left()
     })

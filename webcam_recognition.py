@@ -282,13 +282,10 @@ def enroll_face(name: str, cam_index: int = 0, n_samples: int = ENROLL_SAMPLES) 
 def check_webcam_now() -> str:
     if _recognizer is None:
         return "i'm not enrolled yet babe 😭 run: python enroll.py"
-    acquired = _cam_lock.acquire(timeout=5.0)
-    if not acquired:
-        return "camera is busy rn babe 👀 try again in a sec"
-    try:
-        result = recognise_once()
-    finally:
-        _cam_lock.release()
+    # FIX: this used to acquire _cam_lock and then call recognise_once(), which
+    # acquires the same non-reentrant lock again. The inner acquire always timed
+    # out, so this ALWAYS returned "no_face". recognise_once() handles the lock.
+    result = recognise_once()
     if result == "known":
         return _get_greeting(_enrolled_name)
     elif result == "stranger":
