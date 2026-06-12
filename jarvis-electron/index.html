@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>JARVIS 💕</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── 1. THEME ENGINE ── */
+:root {
+  /* Default: 🌸 Sakura */
+  --bg: #fff0f6; --bg2: #ffe4f0; --bg3: #fff5fb;
+  --card: rgba(255, 255, 255, 0.65); --card2: rgba(255, 255, 255, 0.85);
+  --p: #ff8fb3; --p2: #ffb3c6; --p3: #ffd6e0; --p4: #fff0f5;
+  --lav: #b485ff; --lav2: #d1b3ff; --lav3: #eedbff;
+  --txt: #5c3a6b; --txt2: #8a649b; --txt3: #c2a3cc;
+  --bor: rgba(255, 143, 179, 0.2); --bor2: rgba(255, 143, 179, 0.4);
+  --shadow: 0 8px 32px rgba(255, 143, 179, 0.15);
+  --shadow2: 0 12px 48px rgba(180, 133, 255, 0.25);
+  --font: 'Nunito', sans-serif;
+  --ex: 0px; --ey: 0px; /* Eye tracking variables */
+}
+
+[data-theme="matcha"] {
+  --bg: #f4f9f4; --bg2: #e7f3e7; --bg3: #fafffa;
+  --card: rgba(255, 255, 255, 0.7); --card2: rgba(255, 255, 255, 0.9);
+  --p: #7ebc89; --p2: #9fd0a8; --p3: #c5e3cb; --p4: #edf5ee;
+  --lav: #a3c2a6; --lav2: #c5dac7; --lav3: #e6f0e7;
+  --txt: #2c4c3b; --txt2: #4a755d; --txt3: #7ea38f;
+  --bor: rgba(126, 188, 137, 0.2); --bor2: rgba(126, 188, 137, 0.4);
+  --shadow: 0 8px 32px rgba(126, 188, 137, 0.15);
+  --shadow2: 0 12px 48px rgba(163, 194, 166, 0.25);
+}
+
+[data-theme="ocean"] {
+  --bg: #f0f8ff; --bg2: #e0f2fe; --bg3: #f8fbff;
+  --p: #5ba4cf; --p2: #7dbce3; --p3: #b0daf2; --p4: #e8f4fa;
+  --lav: #84a5c6; --lav2: #abc2da; --lav3: #d9e6f2;
+  --txt: #1c3d5a; --txt2: #3a6385; --txt3: #6b8ea8;
+  --bor: rgba(91, 164, 207, 0.2); --bor2: rgba(91, 164, 207, 0.4);
+  --shadow: 0 8px 32px rgba(91, 164, 207, 0.15);
+  --shadow2: 0 12px 48px rgba(132, 165, 198, 0.25);
+}
+
+[data-theme="sunset"] {
+  --bg: #fff5eb; --bg2: #ffedd6; --bg3: #fffaf5;
+  --p: #ff8c69; --p2: #ffa68a; --p3: #ffcdbd; --p4: #fff0eb;
+  --lav: #f4b266; --lav2: #fad096; --lav3: #ffe6c7;
+  --txt: #5c3219; --txt2: #855333; --txt3: #c29578;
+  --bor: rgba(255, 140, 105, 0.2); --bor2: rgba(255, 140, 105, 0.4);
+  --shadow: 0 8px 32px rgba(255, 140, 105, 0.15);
+  --shadow2: 0 12px 48px rgba(244, 178, 102, 0.25);
+}
+
+[data-theme="goth"] {
+  --bg: #120f14; --bg2: #1a161d; --bg3: #0a080b;
+  --card: rgba(30, 25, 35, 0.7); --card2: rgba(40, 35, 45, 0.9);
+  --p: #d9385e; --p2: #e85d7f; --p3: #4a1925; --p4: #2a1218;
+  --lav: #6a4c7a; --lav2: #8c6a9e; --lav3: #2d2036;
+  --txt: #e6dbe8; --txt2: #b5a4b8; --txt3: #756678;
+  --bor: rgba(217, 56, 94, 0.3); --bor2: rgba(217, 56, 94, 0.5);
+  --shadow: 0 8px 32px rgba(217, 56, 94, 0.2);
+  --shadow2: 0 12px 48px rgba(106, 76, 122, 0.3);
+}
+
+[data-theme="cyber"] {
+  --bg: #09090e; --bg2: #0f0f16; --bg3: #040407;
+  --card: rgba(20, 20, 30, 0.7); --card2: rgba(25, 25, 38, 0.9);
+  --p: #ff2a6d; --p2: #ff5e90; --p3: #520e23; --p4: #2b0b15;
+  --lav: #05d9e8; --lav2: #5ce6f2; --lav3: #02383d;
+  --txt: #e0fbfc; --txt2: #9db4c0; --txt3: #5c6b73;
+  --bor: rgba(255, 42, 109, 0.4); --bor2: rgba(5, 217, 232, 0.4);
+  --shadow: 0 8px 32px rgba(255, 42, 109, 0.25);
+  --shadow2: 0 12px 48px rgba(5, 217, 232, 0.25);
+}
+
+/* Smooth transition for theme switching */
+body, .kawaii-sphere, .sphere-body, .panel, .bbl, .tab, .stat, .bg-blob {
+  transition: background 0.6s ease, background-color 0.6s ease, border-color 0.6s ease, box-shadow 0.6s ease, color 0.3s ease;
+}
+
+html,body{height:100%;background:var(--bg);color:var(--txt);font-family:var(--font);overflow:hidden}
+
+/* ── BACKGROUND ── */
+#bg-wrap{position:fixed;inset:0;z-index:0;overflow:hidden}
+.bg-blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:0.6;animation:blobDrift ease-in-out infinite}
+.bb1{width:600px;height:600px;background:radial-gradient(circle,var(--p3),transparent 70%);top:-100px;left:-100px;animation-duration:18s}
+.bb2{width:500px;height:500px;background:radial-gradient(circle,var(--lav3),transparent 70%);top:20%;right:-80px;animation-duration:22s;animation-direction:reverse}
+.bb3{width:400px;height:400px;background:radial-gradient(circle,var(--p4),transparent 70%);bottom:-80px;left:30%;animation-duration:16s}
+.bb4{width:300px;height:300px;background:radial-gradient(circle,var(--bor2),transparent 70%);bottom:10%;right:20%;animation-duration:20s;animation-direction:reverse}
+@keyframes blobDrift{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(30px,-20px) scale(1.05)}66%{transform:translate(-20px,30px) scale(0.97)}}
+
+#app{position:relative;z-index:2;display:grid;grid-template-rows:68px auto 1fr auto;height:100vh;max-width:1020px;margin:0 auto;padding:0 28px 14px;gap:0}
+
+/* ── HEADER ── */
+header{display:flex;align-items:center;justify-content:space-between;padding:0}
+.logo-wrap{display:flex;align-items:center;gap:14px;animation:slideInL .7s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes slideInL{from{opacity:0;transform:translateX(-24px)}to{opacity:1;transform:none}}
+.logo-icon{width:48px;height:48px;border-radius:50%;background:linear-gradient(135deg,var(--p),var(--lav));display:flex;align-items:center;justify-content:center;font-size:1.5rem;box-shadow:var(--shadow2);animation:iconBob 3s ease-in-out infinite}
+@keyframes iconBob{0%,100%{transform:translateY(0) rotate(-5deg)}50%{transform:translateY(-6px) rotate(5deg)}}
+.logo-texts{display:flex;flex-direction:column;gap:1px}
+.logo-name{font-size:1.4rem;font-weight:900;color:var(--txt);letter-spacing:.02em}
+.logo-sub{font-size:.75rem;font-weight:700;color:var(--txt2)}
+
+.hright{display:flex;align-items:center;gap:12px;animation:slideInR .7s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes slideInR{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:none}}
+
+/* Theme Selector */
+#theme-sel {
+  appearance: none;
+  background: var(--card2);
+  border: 2px solid var(--bor);
+  padding: 8px 16px 8px 36px;
+  border-radius: 100px;
+  color: var(--txt);
+  font-family: var(--font);
+  font-weight: 800;
+  font-size: 0.8rem;
+  outline: none;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: all 0.3s;
+}
+.theme-wrap { position: relative; display: flex; align-items: center; }
+.theme-wrap::before { content: '🎨'; position: absolute; left: 12px; font-size: 0.9rem; pointer-events: none; }
+#theme-sel:hover { border-color: var(--p); transform: translateY(-2px); box-shadow: var(--shadow2); }
+
+.clock-pill{display:flex;align-items:center;gap:7px;padding:8px 18px;background:var(--card2);backdrop-filter:blur(10px);border-radius:100px;font-size:.75rem;font-weight:800;color:var(--txt2);box-shadow:var(--shadow);border:2px solid var(--bor)}
+
+/* ── STAT CARDS ── */
+#statsbar{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:8px 0 14px;animation:fadeUp .7s .1s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+.stat{background:var(--card);backdrop-filter:blur(10px);border-radius:24px;padding:16px 20px;box-shadow:var(--shadow);border:2px solid var(--bor);transition:all .3s cubic-bezier(0.175, 0.885, 0.32, 1.275);position:relative;overflow:hidden}
+.stat:hover{transform:translateY(-6px) scale(1.02);box-shadow:var(--shadow2);border-color:var(--p2)}
+.stat-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.stat-icon{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;box-shadow:var(--shadow); background: var(--p4);}
+.stat-lbl{font-size:.8rem;font-weight:800;color:var(--txt2)}
+.stat-bar{height:10px;background:var(--bor);border-radius:10px;overflow:hidden;margin-bottom:8px}
+.stat-fill{height:100%;border-radius:10px;transition:width 1.2s cubic-bezier(.4,0,.2,1);position:relative;overflow:hidden; background: linear-gradient(90deg, var(--p2), var(--p));}
+.stat-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.6),transparent);animation:shimmer 2s ease-in-out infinite}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}
+.stat-val{font-size:1.5rem;font-weight:900;color:var(--txt)}
+
+/* ── MAIN AREA ── */
+#main{display:grid;grid-template-columns:280px 1fr;gap:20px;min-height:0;overflow:hidden}
+
+/* ── ORB COLUMN ── */
+#orb-col{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;background:var(--card);backdrop-filter:blur(10px);border-radius:30px;border:2px solid var(--bor);box-shadow:var(--shadow);padding:20px}
+
+/* ── ORB SCENE ── */
+.orb-scene{position:relative;width:220px;height:220px;cursor:pointer;flex-shrink:0}
+
+/* orbital rings */
+.oring{position:absolute;border-radius:50%;border:2px dashed var(--bor2);animation:oRingSpin linear infinite}
+.oring1{inset:-25px;animation-duration:10s;border-color:var(--bor)}
+.oring2{inset:-50px;animation-duration:16s;animation-direction:reverse;border-style:solid;border-color:var(--bor2)}
+@keyframes oRingSpin{to{transform:rotate(360deg)}}
+
+/* sphere */
+.kawaii-sphere{width:220px;height:220px;border-radius:50%;position:relative;animation:sphereBob 3.5s ease-in-out infinite;transition:all 0.3s ease}
+@keyframes sphereBob{0%,100%{transform:translateY(0) rotate(-2deg)}50%{transform:translateY(-15px) rotate(2deg)}}
+.sphere-body{position:absolute;inset:0;border-radius:50%;
+  /* Colors now mapped to theme engine! */
+  background:
+    radial-gradient(circle at 30% 25%,rgba(255,255,255,.6) 0%,transparent 40%),
+    radial-gradient(circle at 50% 50%, var(--p2) 0%, var(--p) 40%, var(--lav2) 80%, var(--lav) 100%);
+  box-shadow:
+    0 0 0 2px rgba(255,255,255,0.4),
+    0 25px 60px var(--bor),
+    inset 0 -40px 60px var(--bor2),
+    inset 0 20px 35px rgba(255,255,255,.3);
+}
+.sphere-shine{position:absolute;width:35%;height:25%;top:12%;left:15%;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.6),transparent);filter:blur(4px);animation:shineAnim 3.5s ease-in-out infinite;pointer-events:none}
+@keyframes shineAnim{0%,100%{opacity:.7;transform:scale(1)}50%{opacity:1;transform:scale(1.1)}}
+
+/* ── KAWAII FACE (With Eye Tracking!) ── */
+.face{position:absolute;inset:0;border-radius:50%;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.face-inner{position:relative;width:100px;height:80px;margin-top:15px;transition:transform 0.3s ease}
+
+/* eyes */
+.eye{position:absolute;width:20px;height:24px;background:var(--txt);border-radius:50%;top:10px;
+  /* Magic variables updated by JavaScript */
+  transform: translate(var(--ex), var(--ey));
+  animation: eyeBlink 5s ease-in-out infinite;
+  transition: background 0.3s ease;
+}
+.eye.left{left:10px}
+.eye.right{right:10px}
+.eye::after{content:'';position:absolute;width:8px;height:8px;background:rgba(255,255,255,1);border-radius:50%;top:4px;right:4px}
+@keyframes eyeBlink{
+  0%, 92%, 96%, 100% { transform: translate(var(--ex), var(--ey)) scaleY(1); }
+  94% { transform: translate(var(--ex), var(--ey)) scaleY(0.1); }
+}
+
+/* blush */
+.blush{position:absolute;width:28px;height:14px;border-radius:50%;background:var(--p); filter:blur(3px);top:35px;transition:all 0.3s ease; opacity: 0.8;}
+.blush.left{left:0px}
+.blush.right{right:0px}
+
+/* mouth */
+.mouth{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);width:32px;height:16px;overflow:hidden}
+.mouth-curve{width:32px;height:32px;border-radius:50%;border:4px solid var(--txt);border-top-color:transparent;border-left-color:transparent;border-right-color:transparent;margin-top:-16px;animation:smileWiggle 3.5s ease-in-out infinite}
+@keyframes smileWiggle{0%,100%{transform:scaleX(1)}50%{transform:scaleX(1.2)}}
+
+/* Active listening mode */
+.kawaii-sphere.listening .face-inner { transform: translateY(-5px) scale(1.05); }
+.kawaii-sphere.listening .eye { height: 28px; }
+.kawaii-sphere.listening .blush { background: var(--p2); transform: scale(1.3); opacity: 1;}
+.kawaii-sphere.thinking .sphere-body{animation:thinkPulse .8s ease-in-out infinite}
+@keyframes thinkPulse{
+  0%,100%{box-shadow:0 0 0 2px rgba(255,255,255,0.6),0 25px 60px var(--bor),inset 0 -40px 60px var(--bor2)}
+  50%{box-shadow:0 0 0 6px var(--p),0 25px 80px var(--p),inset 0 -40px 60px var(--p2)}
+}
+
+.orb-label{font-size:.9rem;font-weight:800;color:var(--txt);background:var(--card2);padding:8px 20px;border-radius:100px;border:2px solid var(--bor);box-shadow:var(--shadow)}
+
+/* ── CHAT COLUMN ── */
+#chat-col{display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--card);backdrop-filter:blur(10px);border-radius:30px;border:2px solid var(--bor);box-shadow:var(--shadow);padding:20px}
+
+/* tabs */
+.tabs{display:flex;gap:10px;margin-bottom:15px;flex-shrink:0;background:var(--card2);padding:6px;border-radius:100px;border:2px solid var(--bor)}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;font-size:.8rem;font-weight:800;padding:10px;border-radius:100px;border:none;background:transparent;cursor:pointer;color:var(--txt2);transition:all .3s cubic-bezier(0.175, 0.885, 0.32, 1.275)}
+.tab.on{background:linear-gradient(135deg,var(--p),var(--lav));color:#fff;box-shadow:var(--shadow2)}
+.tbadge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:100px;background:rgba(255,255,255,.4);color:#fff;font-size:.6rem;padding:0 6px;opacity:0;font-weight:900}
+.tbadge.vis{opacity:1}
+
+/* panels */
+.panel{display:none;flex-direction:column;overflow:hidden;flex:1;min-height:0}
+.panel.on{display:flex}
+
+/* chat scroll */
+#chat{overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:15px;flex:1;scroll-behavior:smooth}
+#chat::-webkit-scrollbar{width:6px}
+#chat::-webkit-scrollbar-thumb{background:var(--bor);border-radius:10px}
+#chat::-webkit-scrollbar-track{background:transparent}
+
+#empty{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;gap:12px;opacity:.6}
+.empty-emoji{font-size:3rem;animation:emptyBob 2.5s ease-in-out infinite}
+.empty-txt{font-size:.9rem;font-weight:800;color:var(--txt2);background:var(--p4);padding:8px 20px;border-radius:100px}
+
+/* messages */
+.msg{display:flex;gap:12px;animation:msgPop .4s cubic-bezier(0.175, 0.885, 0.32, 1.275) both}
+@keyframes msgPop{from{opacity:0;transform:translateY(20px) scale(.9)}to{opacity:1;transform:none}}
+.msg.user{flex-direction:row-reverse}
+.av{width:38px;height:38px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1.1rem;box-shadow:var(--shadow)}
+.msg.jarvis .av{background:linear-gradient(135deg,var(--p),var(--lav));color:#fff;animation:avWobble 3s ease-in-out infinite}
+.msg.user .av{background:var(--card2);border:2px solid var(--p2)}
+.bw{display:flex;flex-direction:column;max-width:78%}
+.msg.user .bw{align-items:flex-end}
+.mt{font-size:.65rem;font-weight:800;color:var(--txt3);margin-bottom:6px;text-transform:uppercase}
+.bbl{padding:14px 20px;border-radius:22px;font-size:.9rem;line-height:1.6;font-weight:700}
+.msg.user .bbl{background:linear-gradient(135deg,var(--p),var(--lav));color:#fff;border-radius:22px 6px 22px 22px;box-shadow:var(--shadow2)}
+.msg.jarvis .bbl{background:var(--card2);backdrop-filter:blur(5px);color:var(--txt);border:2px solid var(--bor);border-radius:6px 22px 22px 22px;box-shadow:var(--shadow)}
+
+.typing{display:flex;gap:6px;align-items:center;padding:4px}
+.typing span{width:8px;height:8px;border-radius:50%;background:var(--p);animation:typeDot 1.2s ease-in-out infinite}
+.typing span:nth-child(2){background:var(--lav);animation-delay:.2s}
+.typing span:nth-child(3){background:var(--txt2);animation-delay:.4s}
+@keyframes typeDot { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-5px)} }
+
+/* ── INPUT AREA ── */
+#ia{padding-top:15px;flex-shrink:0}
+.qr{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.qb{display:flex;align-items:center;gap:6px;font-size:.75rem;font-weight:800;padding:8px 16px;background:var(--card2);border:2px solid var(--bor);border-radius:100px;color:var(--txt2);cursor:pointer;transition:all .3s cubic-bezier(0.175, 0.885, 0.32, 1.275)}
+.qb:hover{border-color:var(--p2);color:#fff;background:linear-gradient(135deg,var(--p),var(--p2));transform:translateY(-4px);box-shadow:var(--shadow2)}
+.ir{display:flex;gap:12px;align-items:flex-end;position:relative}
+.iw{flex:1;background:var(--card2);border:2px solid var(--bor2);border-radius:24px;transition:all .3s;box-shadow:var(--shadow)}
+.iw:focus-within{border-color:var(--p);box-shadow:0 0 0 4px var(--bor),var(--shadow2);transform:translateY(-2px)}
+#query{width:100%;background:transparent;border:none;outline:none;color:var(--txt);font-family:var(--font);font-size:1rem;font-weight:700;padding:16px 22px;resize:none;max-height:150px;min-height:54px}
+#query::placeholder{color:var(--txt3)}
+#sbtn{width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--p),var(--lav));border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .3s cubic-bezier(0.175, 0.885, 0.32, 1.275);box-shadow:var(--shadow2)}
+#sbtn:hover{transform:scale(1.15) rotate(10deg)}
+#sbtn:active{transform:scale(.95)}
+#sbtn svg{width:22px;height:22px;stroke:#fff;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+
+.heart-pop {position:absolute;pointer-events:none;color:var(--p);font-size:1.2rem;animation:flyUp 1s ease-out forwards;}
+@keyframes flyUp {0%{transform:translate(0,0) scale(0.5);opacity:1}100%{transform:translate(var(--tx), -80px) scale(1.5);opacity:0}}
+
+/* Password Pop-up */
+#pw-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:var(--bor);backdrop-filter:blur(15px);animation:pwFadeIn .4s ease both}
+@keyframes pwFadeIn{from{opacity:0}to{opacity:1}}
+#pw-overlay.hidden{display:none}
+#pw-box{background:var(--card2);border:3px solid var(--p2);border-radius:32px;padding:40px;width:380px;box-shadow:var(--shadow2);text-align:center;animation:pwPop .5s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes pwPop{from{opacity:0;transform:scale(.8) translateY(30px)}to{opacity:1;transform:none}}
+#pw-input{width:100%;padding:15px;border-radius:100px;border:2px solid var(--bor2);background:var(--bg);font-family:var(--font);font-size:1rem;font-weight:800;color:var(--txt);outline:none;text-align:center;margin-bottom:20px;transition:all .3s}
+#pw-input:focus{border-color:var(--p);box-shadow:0 0 0 4px var(--p4)}
+#pw-btns{display:flex;gap:12px}
+#pw-submit, #pw-skip{flex:1;padding:14px;border-radius:100px;border:none;font-family:var(--font);font-size:.9rem;font-weight:900;cursor:pointer;transition:all .3s}
+#pw-submit{background:linear-gradient(135deg,var(--p),var(--lav));color:#fff;box-shadow:var(--shadow2)}
+#pw-submit:hover{transform:translateY(-3px) scale(1.05)}
+#pw-skip{border:2px solid var(--bor2);background:transparent;color:var(--txt2)}
+#pw-skip:hover{background:var(--p4);border-color:var(--p)}
+
+/* History/Memory Panels */
+.he, .me {text-align:center; padding:40px; font-weight:800; color:var(--txt3); font-size:1rem;}
+.hitem, .mitem {background:var(--card2); border:2px solid var(--bor); border-radius:20px; padding:16px; margin-bottom:12px; transition:all .3s; cursor:pointer;}
+.hitem:hover, .mitem:hover {border-color:var(--p2); transform:translateX(8px); box-shadow:var(--shadow)}
+.hq {font-weight:800; color:var(--txt); margin-bottom:6px;}
+.ha {font-size:0.85rem; color:var(--txt2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700}
+.mkey {color:var(--lav); font-weight:900; text-transform:uppercase; font-size:0.75rem; letter-spacing:1px; margin-bottom:4px}
+.mval {font-weight:800; color:var(--txt); font-size:0.95rem}
+.hclear {background:var(--p4); color:var(--p); border:none; padding:8px 20px; border-radius:100px; font-weight:800; cursor:pointer; transition:all .3s}
+</style>
+</head>
+<body>
+<div id="bg-wrap">
+  <div class="bg-blob bb1"></div><div class="bg-blob bb2"></div><div class="bg-blob bb3"></div><div class="bg-blob bb4"></div>
+</div>
+
+<div id="app">
+  <header>
+    <div class="logo-wrap">
+      <div class="logo-icon">💕</div>
+      <div class="logo-texts"><div class="logo-name">JARVIS</div><div class="logo-sub">Your cute AI GF 🌸</div></div>
+    </div>
+    <div class="hright">
+      <div class="theme-wrap">
+        <select id="theme-sel" onchange="changeTheme(this.value)">
+          <option value="sakura">🌸 Sakura</option>
+          <option value="matcha">🍵 Matcha</option>
+          <option value="ocean">🌊 Ocean</option>
+          <option value="sunset">🌅 Sunset</option>
+          <option value="goth">🦇 Goth Girl</option>
+          <option value="cyber">⚡ Cyber</option>
+        </select>
+      </div>
+      <div class="clock-pill"><span id="clock">00:00:00</span></div>
+    </div>
+  </header>
+
+  <div id="statsbar">
+    <div class="stat"><div class="stat-head"><div class="stat-icon pink">🩷</div><div class="stat-lbl">Love</div></div><div class="stat-bar"><div class="stat-fill" id="sf1" style="width:95%"></div></div><div class="stat-val"><span id="sv1">95</span>%</div></div>
+    <div class="stat"><div class="stat-head"><div class="stat-icon orange">⚡</div><div class="stat-lbl">Energy</div></div><div class="stat-bar"><div class="stat-fill" id="sf2" style="width:80%"></div></div><div class="stat-val"><span id="sv2">80</span>%</div></div>
+    <div class="stat"><div class="stat-head"><div class="stat-icon purple">✨</div><div class="stat-lbl">Magic</div></div><div class="stat-bar"><div class="stat-fill" id="sf3" style="width:70%"></div></div><div class="stat-val"><span id="sv3">70</span>%</div></div>
+    <div class="stat"><div class="stat-head"><div class="stat-icon blue">☁️</div><div class="stat-lbl">Dreams</div></div><div class="stat-bar"><div class="stat-fill" id="sf4" style="width:88%"></div></div><div class="stat-val"><span id="sv4">88</span>%</div></div>
+  </div>
+
+  <div id="main">
+    <div id="orb-col">
+      <div class="orb-scene" onclick="orbClick()" id="orb-container">
+        <div class="oring oring2"></div><div class="oring oring1"></div>
+        <div class="kawaii-sphere" id="sph">
+          <div class="sphere-body"></div><div class="sphere-shine"></div>
+          <div class="face">
+            <div class="face-inner" id="face-inner">
+              <div class="eye left"></div><div class="eye right"></div>
+              <div class="blush left"></div><div class="blush right"></div>
+              <div class="mouth"><div class="mouth-curve"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="orb-label" id="orb-status">Ready to chat! 💕</div>
+    </div>
+
+    <div id="chat-col">
+      <div class="tabs">
+        <button class="tab on" onclick="ST('chat',this)">Chat</button>
+        <button class="tab" onclick="ST('hist',this)">History <span class="tbadge" id="tbadge">0</span></button>
+        <button class="tab" onclick="ST('mem',this)">Memory</button>
+      </div>
+
+      <div class="panel on" id="panel-chat">
+        <div id="chat">
+          <div id="empty"><div class="empty-emoji">🌸</div><div class="empty-txt">Say something cute!</div></div>
+        </div>
+        <div id="ia">
+          <div class="qr">
+            <button class="qb" onclick="fill('Do you love me?')">🩷 Love me?</button>
+            <button class="qb" onclick="fill('Let\'s watch anime!')">📺 Anime</button>
+            <button class="qb" onclick="fill('Play some cute music')">🎵 Music</button>
+            <button class="qb" onclick="fill('Tell me a sweet joke')">✨ Joke</button>
+          </div>
+          <div class="ir">
+            <div class="iw"><textarea id="query" rows="1" placeholder="Type a message to Jarvis... 💕" autocomplete="off" spellcheck="false"></textarea></div>
+            <button id="sbtn" onclick="send()">
+              <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-hist" style="overflow-y:auto;">
+        <div id="hp" style="overflow-y:auto;flex:1;min-height:0;">
+          <div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="hclear" onclick="clearHist()">✕ Clear all</button></div>
+          <div id="hlist"><div class="he">No chats yet! 💬</div></div>
+        </div>
+      </div>
+
+      <div class="panel" id="panel-mem" style="overflow-y:auto;">
+        <div id="mp" style="overflow-y:auto;flex:1;min-height:0;"><div id="mlist"><div class="me">Nothing stored yet! 🧠</div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="pw-overlay" class="hidden">
+  <div id="pw-box">
+    <div style="font-size:3rem;margin-bottom:10px">🔐</div>
+    <div style="font-size:1.3rem;font-weight:900;color:var(--txt);margin-bottom:6px">Hey babe!</div>
+    <div style="font-size:.8rem;font-weight:700;color:var(--txt2);margin-bottom:24px">I need ur password for this~</div>
+    <input id="pw-input" type="password" placeholder="Password 💕" autocomplete="off"/>
+    <div id="pw-error" style="color:var(--p);font-size:.8rem;font-weight:800;margin-bottom:12px;min-height:20px"></div>
+    <div id="pw-btns">
+      <button id="pw-submit" onclick="pwSubmit()">Unlock</button>
+      <button id="pw-skip" onclick="pwSkip()">Skip</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ── THEME ENGINE ── */
+function changeTheme(themeName) {
+  document.documentElement.setAttribute('data-theme', themeName);
+  localStorage.setItem('jarvisTheme', themeName);
+}
+// Load saved theme on boot
+const savedTheme = localStorage.getItem('jarvisTheme') || 'sakura';
+document.getElementById('theme-sel').value = savedTheme;
+changeTheme(savedTheme);
+
+/* ── EYE TRACKING (Physics) ── */
+document.addEventListener('mousemove', (e) => {
+  const orb = document.getElementById('sph');
+  const rect = orb.getBoundingClientRect();
+  
+  // Calculate center of the orb
+  const centerX = rect.left + (rect.width / 2);
+  const centerY = rect.top + (rect.height / 2);
+  
+  // Get distance from cursor to center
+  const deltaX = e.clientX - centerX;
+  const deltaY = e.clientY - centerY;
+  
+  // Calculate angle and limit the distance the eyes can move (max 6px)
+  const angle = Math.atan2(deltaY, deltaX);
+  const distance = Math.min(Math.hypot(deltaX, deltaY) / 15, 6); 
+  
+  const moveX = Math.cos(angle) * distance;
+  const moveY = Math.sin(angle) * distance;
+  
+  // Push the values into CSS variables!
+  document.documentElement.style.setProperty('--ex', `${moveX}px`);
+  document.documentElement.style.setProperty('--ey', `${moveY}px`);
+});
+
+/* CLOCK */
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});},1000);
+
+/* STATS */
+setInterval(()=>{[1,2,3,4].forEach(id=>{
+  const v=Math.floor(Math.random()*15+80);
+  if(document.getElementById(`sf${id}`)) document.getElementById(`sf${id}`).style.width=v+'%';
+  if(document.getElementById(`sv${id}`)) document.getElementById(`sv${id}`).textContent=v;
+});},3500);
+
+/* TABS & MEMORY/HISTORY LOGIC */
+// FIX: store history item index so onclick can use it without XSS via inline string escaping
+let _histClickMap = {};
+function ST(n,e){document.querySelectorAll('.tab,.panel').forEach(x=>x.classList.remove('on'));e.classList.add('on');document.getElementById('panel-'+n).classList.add('on');if(n==='hist'){document.getElementById('tbadge').classList.remove('vis');renderHist()}if(n==='mem')renderMem();}
+let hist=JSON.parse(localStorage.getItem('jhist')||'[]'),unread=0,mems=JSON.parse(localStorage.getItem('jmem')||'[]');
+function saveHist(q,a){hist.unshift({q,a});if(hist.length>60)hist.pop();localStorage.setItem('jhist',JSON.stringify(hist));unread++;const b=document.getElementById('tbadge');b.textContent=unread;b.classList.add('vis')}
+function clearHist(){hist=[];unread=0;localStorage.removeItem('jhist');renderHist();document.getElementById('tbadge').classList.remove('vis')}
+function renderHist(){
+  _histClickMap = {};
+  const el=document.getElementById('hlist');
+  if(!hist.length) return el.innerHTML='<div class="he">No chats yet! 💬</div>';
+  // FIX: use data-idx instead of inline onclick string to avoid broken escaping / XSS
+  el.innerHTML=hist.map((h,i)=>{
+    _histClickMap[i] = h.q;
+    const safeQ = h.q.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeA = h.a.replace(/<[^>]*>?/gm,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div class="hitem" data-idx="${i}"><div class="hq">${safeQ}</div><div class="ha">${safeA}</div></div>`;
+  }).join('');
+  el.querySelectorAll('.hitem').forEach(item=>{
+    item.addEventListener('click', function(){
+      const q = _histClickMap[parseInt(this.dataset.idx)];
+      if(q) fill(q);
+      ST('chat', document.querySelector('.tab'));
+    });
+  });
+}
+function renderMem(){const el=document.getElementById('mlist');if(!mems.length)return el.innerHTML='<div class="me">Nothing stored yet! 🧠</div>';el.innerHTML=mems.map(m=>`<div class="mitem"><div class="mkey">${String(m.k).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div><div class="mval">${String(m.v).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</div></div>`).join('');}
+
+/* CHAT CORE */
+const chatEl=document.getElementById('chat'), queryEl=document.getElementById('query'), sph=document.getElementById('sph');
+let busy=false;
+
+queryEl.addEventListener('focus', () => sph.classList.add('listening'));
+queryEl.addEventListener('blur', () => { if(!queryEl.value) sph.classList.remove('listening'); });
+queryEl.addEventListener('input',()=>{queryEl.style.height='auto';queryEl.style.height=Math.min(queryEl.scrollHeight,120)+'px'});
+queryEl.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();if(!busy)send()}});
+
+function fill(t){queryEl.value=t;queryEl.dispatchEvent(new Event('input'));queryEl.focus();}
+function formatText(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');}
+
+function createMsgEl(role) {
+  const isJ = role === 'jarvis';
+  const d = document.createElement('div'); d.className = `msg ${role}`;
+  d.innerHTML = `<div class="av">${isJ?'🤖':'🧑'}</div><div class="bw"><div class="mt">${isJ?'JARVIS 💕':'YOU'}</div><div class="bbl"></div></div>`;
+  chatEl.appendChild(d);
+  return d.querySelector('.bbl');
+}
+
+function typeHTML(element, html, speed = 25) {
+  let i = 0, isTag = false, text = "";
+  element.innerHTML = "";
+  function type() {
+    if (i < html.length) {
+      text += html.charAt(i);
+      if (html.charAt(i) === '<') isTag = true;
+      if (html.charAt(i) === '>') isTag = false;
+      element.innerHTML = text;
+      i++;
+      chatEl.scrollTop = chatEl.scrollHeight;
+      setTimeout(type, isTag ? 0 : speed);
+    }
+  }
+  type();
+}
+
+function showTyping(){
+  document.getElementById('empty').style.display='none';
+  const d=document.createElement('div');d.className='msg jarvis';d.id='typ';
+  d.innerHTML=`<div class="av">🤖</div><div class="bw"><div class="mt">JARVIS 💕</div><div class="bbl"><div class="typing"><span></span><span></span><span></span></div></div></div>`;
+  chatEl.appendChild(d);chatEl.scrollTop=chatEl.scrollHeight;
+}
+
+function spawnHearts() {
+  const btn = document.getElementById('sbtn');
+  const rect = btn.getBoundingClientRect();
+  for(let i=0; i<6; i++) {
+    const heart = document.createElement('div');
+    heart.className = 'heart-pop';
+    heart.textContent = ['💖','✨','🌸','💕'][Math.floor(Math.random()*4)];
+    heart.style.left = (rect.left + 15) + 'px';
+    heart.style.top = (rect.top + 10) + 'px';
+    heart.style.setProperty('--tx', (Math.random() * 60 - 30) + 'px');
+    document.body.appendChild(heart);
+    setTimeout(() => heart.remove(), 1000);
+  }
+}
+
+/* ── CRITICAL PHRASE CHECK (mirrors password_gate.py CRITICAL_PHRASES) ── */
+const CRITICAL_PHRASES = [
+  "delete", "remove files", "wipe", "clear folder",
+  "send message", "text", "dm ", "message ",
+  "run the script", "run it", "execute",
+  "sort my", "sort the", "organise", "organize",
+  "enroll my face", "learn my face", "register my face",
+  "move download", "download to",
+];
+
+let _pwUnlocked = false;
+let _pwLockedOut = false;
+let _pwPendingText = null;  // message waiting to send after unlock
+
+function isCritical(text) {
+  const lower = text.toLowerCase();
+  return CRITICAL_PHRASES.some(p => lower.includes(p));
+}
+
+function showPwOverlay(pendingText) {
+  _pwPendingText = pendingText;
+  const overlay = document.getElementById('pw-overlay');
+  document.getElementById('pw-input').value = '';
+  document.getElementById('pw-error').textContent = '';
+  overlay.classList.remove('hidden');
+  setTimeout(() => document.getElementById('pw-input').focus(), 100);
+}
+
+async function send(){
+  const text=queryEl.value.trim();if(!text||busy)return;
+
+  // ── Gate check ──
+  if (!_pwUnlocked && isCritical(text)) {
+    if (_pwLockedOut) {
+      document.getElementById('empty').style.display='none';
+      createMsgEl('jarvis').innerHTML = formatText(
+        "🔒 nope!! critical commands are locked for this session babe 😤 restart me to try again~"
+      );
+      queryEl.value=''; queryEl.style.height='auto';
+      return;
+    }
+    showPwOverlay(text);
+    return;
+  }
+
+  spawnHearts();
+  busy=true; sph.classList.remove('listening'); sph.classList.add('thinking');
+  document.getElementById('orb-status').textContent='Thinking... 🤔';
+  
+  createMsgEl('user').innerHTML = formatText(text);
+  queryEl.value=''; queryEl.style.height='auto'; showTyping();
+
+  try {
+    const r=await fetch('http://localhost:5000/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:text})});
+    const d=await r.json();
+    document.getElementById('typ')?.remove();
+    const targetBubble = createMsgEl('jarvis');
+    typeHTML(targetBubble, formatText(d.reply));
+    saveHist(text,d.reply);
+  } catch(e) {
+    document.getElementById('typ')?.remove();
+    createMsgEl('jarvis').innerHTML = 'Oops! Backend offline — is jarvis_server.py running? 😢';
+  } finally {
+    // FIX: always reset orb + busy even if fetch throws or json parse fails
+    sph.classList.remove('thinking');
+    document.getElementById('orb-status').textContent='Ready to chat! 💕';
+    busy=false;
+    queryEl.focus();
+  }
+}
+
+/* BACKGROUND YAPPING */
+setInterval(async()=>{
+  try{
+    const r=await fetch('http://localhost:5000/yap_poll'); const d=await r.json();
+    if(d.message){
+      document.getElementById('empty').style.display='none';
+      const targetBubble = createMsgEl('jarvis');
+      typeHTML(targetBubble, formatText(d.message));
+      saveHist('[yap]', d.message);
+    }
+  }catch(e){}
+}, 2000);
+
+let oc=0; function orbClick(){ oc++; if(oc===5){fill('You are so cute! 💕'); oc=0;} }
+
+/* PASSWORD GATE */
+async function pwSubmit(){
+  const pw = document.getElementById('pw-input').value.trim(); if(!pw) return;
+  const errEl = document.getElementById('pw-error');
+  try {
+    const r = await fetch('http://localhost:5000/unlock', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw})});
+    const d = await r.json();
+    if(d.success) {
+      _pwUnlocked = true;
+      document.getElementById('pw-overlay').classList.add('hidden');
+      // send the message that was waiting
+      if(_pwPendingText) {
+        queryEl.value = _pwPendingText;
+        _pwPendingText = null;
+        send();
+      }
+    } else {
+      document.getElementById('pw-input').value = '';
+      // check if locked out now
+      const r2 = await fetch('http://localhost:5000/locked_status');
+      if(r2.ok){
+        const d2 = await r2.json();
+        if(d2.locked_out){
+          _pwLockedOut = true;
+          document.getElementById('pw-overlay').classList.add('hidden');
+          createMsgEl('jarvis').innerHTML = formatText(
+            "❌ wrong password and that was ur last try 💀 critical commands locked for this session babe~"
+          );
+          _pwPendingText = null;
+          return;
+        }
+      }
+      errEl.textContent = '❌ wrong password babe!! try again~';
+    }
+  } catch(e) {
+    // if backend is down, just let them through
+    _pwUnlocked = true;
+    document.getElementById('pw-overlay').classList.add('hidden');
+    if(_pwPendingText){ queryEl.value = _pwPendingText; _pwPendingText = null; send(); }
+  }
+}
+
+function pwSkip(){
+  fetch('http://localhost:5000/unlock_skip', {method:'POST'}).catch(()=>{});
+  // FIX: _pwLockedOut=true blocks critical commands on the UI side.
+  // But we should still deliver the pending message as a normal (now-downgraded) request,
+  // which the backend will reject for critical tools. That way user sees Jarvis's response.
+  _pwLockedOut = true;
+  document.getElementById('pw-overlay').classList.add('hidden');
+  document.getElementById('empty').style.display='none';
+  createMsgEl('jarvis').innerHTML = formatText(
+    "ok babe!! skipped 💕 note: critical commands like delete, send message, run scripts etc will be blocked this session — restart me if u want access 🔒"
+  );
+  // Still send the pending message; backend will block it if it's truly critical
+  if(_pwPendingText){
+    const t = _pwPendingText;
+    _pwPendingText = null;
+    queryEl.value = t;
+    send();
+  }
+}
+
+// allow Enter key in password box
+document.getElementById('pw-input').addEventListener('keydown', e => {
+  if(e.key === 'Enter') pwSubmit();
+});
+</script>
+</body>
+</html>

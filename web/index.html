@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>JARVIS</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #020810;
+      --panel:     #050e1a;
+      --border:    #0d2d4a;
+      --accent:    #00c8ff;
+      --accent2:   #0066ff;
+      --glow:      rgba(0,200,255,0.18);
+      --text:      #b8e0f0;
+      --dim:       #3a6070;
+      --danger:    #ff4060;
+      --success:   #00ffaa;
+      --font-mono: 'Share Tech Mono', monospace;
+      --font-head: 'Orbitron', sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-mono);
+      overflow: hidden;
+    }
+
+    /* ── SCANLINE OVERLAY ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.08) 2px,
+        rgba(0,0,0,0.08) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* ── GRID BACKGROUND ── */
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(rgba(0,200,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,200,255,0.04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── LAYOUT ── */
+    #app {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      height: 100vh;
+      padding: 16px 20px;
+      gap: 12px;
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    /* ── HEADER ── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo-icon {
+      width: 42px; height: 42px;
+      position: relative;
+    }
+
+    .logo-icon svg {
+      width: 100%; height: 100%;
+      filter: drop-shadow(0 0 8px var(--accent));
+    }
+
+    .logo-text h1 {
+      font-family: var(--font-head);
+      font-size: 1.5rem;
+      font-weight: 900;
+      letter-spacing: 0.25em;
+      color: var(--accent);
+      text-shadow: 0 0 20px rgba(0,200,255,0.5);
+      line-height: 1;
+    }
+
+    .logo-text p {
+      font-size: 0.62rem;
+      letter-spacing: 0.2em;
+      color: var(--dim);
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      font-size: 0.65rem;
+      letter-spacing: 0.12em;
+      color: var(--dim);
+    }
+
+    .status-dot {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse 2s infinite;
+    }
+
+    .dot.offline { background: var(--danger); box-shadow: 0 0 8px var(--danger); animation: none; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* ── CHAT WINDOW ── */
+    #chat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      position: relative;
+    }
+
+    #chat::-webkit-scrollbar { width: 4px; }
+    #chat::-webkit-scrollbar-track { background: transparent; }
+    #chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* corner decorations */
+    #chat::before, #chat::after {
+      content: '';
+      position: absolute;
+      width: 12px; height: 12px;
+      border-color: var(--accent);
+      border-style: solid;
+      opacity: 0.5;
+    }
+    #chat::before { top: 6px; left: 6px; border-width: 1px 0 0 1px; }
+    #chat::after  { bottom: 6px; right: 6px; border-width: 0 1px 1px 0; }
+
+    /* ── MESSAGES ── */
+    .msg {
+      display: flex;
+      gap: 12px;
+      animation: fadeUp 0.25s ease;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .msg-avatar {
+      flex-shrink: 0;
+      width: 28px; height: 28px;
+      border-radius: 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-head);
+      font-size: 0.55rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-top: 2px;
+    }
+
+    .msg.user .msg-avatar {
+      background: rgba(0,102,255,0.15);
+      border: 1px solid var(--accent2);
+      color: var(--accent2);
+    }
+
+    .msg.jarvis .msg-avatar {
+      background: rgba(0,200,255,0.1);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+    }
+
+    .msg-body {
+      flex: 1;
+    }
+
+    .msg-label {
+      font-size: 0.6rem;
+      letter-spacing: 0.18em;
+      color: var(--dim);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+
+    .msg.user .msg-label { color: rgba(0,102,255,0.6); }
+    .msg.jarvis .msg-label { color: rgba(0,200,255,0.6); }
+
+    .msg-content {
+      font-size: 0.88rem;
+      line-height: 1.65;
+      color: var(--text);
+    }
+
+    .msg.user .msg-content {
+      color: #7ab0d0;
+    }
+
+    /* ── TYPING INDICATOR ── */
+    .typing-msg .msg-content {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      height: 22px;
+    }
+
+    .typing-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: blink 1.2s infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes blink {
+      0%, 80%, 100% { opacity: 0.2; }
+      40% { opacity: 1; }
+    }
+
+    /* ── EMPTY STATE ── */
+    #empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      opacity: 0.25;
+      user-select: none;
+      pointer-events: none;
+    }
+
+    #empty-state svg {
+      width: 56px; height: 56px;
+    }
+
+    #empty-state p {
+      font-family: var(--font-head);
+      font-size: 0.65rem;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+    }
+
+    /* ── INPUT ROW ── */
+    #input-area {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .input-wrap {
+      flex: 1;
+      position: relative;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      transition: border-color 0.2s;
+    }
+
+    .input-wrap:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(0,200,255,0.15), 0 0 20px rgba(0,200,255,0.06);
+    }
+
+    .input-prefix {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-size: 0.8rem;
+      pointer-events: none;
+      opacity: 0.7;
+    }
+
+    #query {
+      width: 100%;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      padding: 12px 14px 12px 28px;
+      resize: none;
+      max-height: 120px;
+      min-height: 46px;
+    }
+
+    #query::placeholder { color: var(--dim); }
+
+    #send-btn {
+      flex-shrink: 0;
+      width: 46px; height: 46px;
+      background: rgba(0,200,255,0.08);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--accent);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    #send-btn:hover {
+      background: rgba(0,200,255,0.15);
+      border-color: var(--accent);
+      box-shadow: 0 0 14px rgba(0,200,255,0.2);
+    }
+
+    #send-btn:active { transform: scale(0.95); }
+    #send-btn:disabled { opacity: 0.3; pointer-events: none; }
+
+    #send-btn svg { width: 18px; height: 18px; }
+
+    .footer-info {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.58rem;
+      letter-spacing: 0.1em;
+      color: var(--dim);
+      padding: 0 2px;
+    }
+
+    #char-count { transition: color 0.2s; }
+
+    /* ── QUICK COMMANDS ── */
+    .quick-cmds {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .qcmd {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.06em;
+      padding: 4px 10px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      color: var(--dim);
+      cursor: pointer;
+      transition: all 0.18s;
+    }
+
+    .qcmd:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(0,200,255,0.06);
+    }
+
+    /* ── PASSWORD GATE MODAL ── */
+    #password-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,4,16,0.88);
+      z-index: 10000;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    #password-modal.active { display: flex; }
+    .modal-box {
+      background: var(--panel);
+      border: 1px solid var(--accent);
+      box-shadow: 0 0 40px rgba(0,200,255,0.15), 0 0 0 1px rgba(0,200,255,0.08);
+      padding: 32px 28px 24px;
+      width: 340px;
+      border-radius: 4px;
+      text-align: center;
+      animation: fadeUp 0.2s ease;
+    }
+    .modal-icon { font-size: 2rem; margin-bottom: 14px; }
+    .modal-title {
+      font-family: var(--font-head);
+      font-size: 0.85rem;
+      letter-spacing: 0.25em;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+    .modal-sub {
+      font-size: 0.68rem;
+      color: var(--dim);
+      letter-spacing: 0.08em;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    #modal-pass-field {
+      width: 100%;
+      background: rgba(0,200,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      outline: none;
+      transition: border-color 0.2s;
+      letter-spacing: 0.12em;
+    }
+    #modal-pass-field:focus { border-color: var(--accent); }
+    .modal-btn-row { display: flex; gap: 8px; }
+    .modal-btn {
+      flex: 1;
+      padding: 10px;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      border-radius: 3px;
+      cursor: pointer;
+      border: 1px solid;
+      transition: all 0.18s;
+    }
+    .modal-btn.primary {
+      background: rgba(0,200,255,0.1);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .modal-btn.primary:hover {
+      background: rgba(0,200,255,0.22);
+      box-shadow: 0 0 14px rgba(0,200,255,0.2);
+    }
+    .modal-btn.secondary {
+      background: transparent;
+      border-color: var(--border);
+      color: var(--dim);
+    }
+    .modal-btn.secondary:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    #modal-error {
+      font-size: 0.68rem;
+      color: var(--danger);
+      margin-top: 10px;
+      min-height: 18px;
+      letter-spacing: 0.06em;
+    }
+    #modal-attempts {
+      font-size: 0.6rem;
+      color: var(--dim);
+      margin-top: 4px;
+      letter-spacing: 0.08em;
+    }
+    /* ── GATE BADGE ── */
+    #gate-badge {
+      font-size: 0.62rem;
+      letter-spacing: 0.12em;
+      padding: 3px 10px;
+      border-radius: 2px;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.2s;
+      user-select: none;
+    }
+    #gate-badge.locked   { color: var(--danger);  border-color: rgba(255,64,96,0.4); }
+    #gate-badge.unlocked { color: var(--success); border-color: rgba(0,255,170,0.4); }
+    #gate-badge:hover    { box-shadow: 0 0 10px rgba(0,200,255,0.15); }
+
+    /* ── SCROLLBAR HIDE ── */
+    * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+  </style>
+</head>
+<body>
+<div id="password-modal">
+  <div class="modal-box">
+    <div class="modal-icon">🔐</div>
+    <div class="modal-title">ACCESS RESTRICTED</div>
+    <div class="modal-sub" id="modal-sub">this is a critical command — enter your password to authorize</div>
+    <input
+      type="password"
+      id="modal-pass-field"
+      placeholder="enter password..."
+      autocomplete="off"
+      onkeydown="if(event.key==='Enter') submitPassword()"
+    />
+    <div class="modal-btn-row">
+      <button class="modal-btn primary" onclick="submitPassword()">🔓 AUTHORIZE</button>
+      <button class="modal-btn secondary" onclick="skipPassword()">⏭ SKIP</button>
+    </div>
+    <div id="modal-error"></div>
+    <div id="modal-attempts"></div>
+  </div>
+</div>
+<div id="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 42 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polygon points="21,2 40,12 40,30 21,40 2,30 2,12" stroke="#00c8ff" stroke-width="1.2" fill="none"/>
+          <polygon points="21,8 34,15 34,27 21,34 8,27 8,15" stroke="#00c8ff" stroke-width="0.6" fill="rgba(0,200,255,0.04)"/>
+          <circle cx="21" cy="21" r="5" fill="none" stroke="#00c8ff" stroke-width="1.2"/>
+          <circle cx="21" cy="21" r="2" fill="#00c8ff"/>
+          <line x1="21" y1="8"  x2="21" y2="16" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+          <line x1="21" y1="26" x2="21" y2="34" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+          <line x1="8"  y1="15" x2="16" y2="19" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+          <line x1="26" y1="23" x2="34" y2="27" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+          <line x1="34" y1="15" x2="26" y2="19" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+          <line x1="16" y1="23" x2="8"  y2="27" stroke="#00c8ff" stroke-width="0.6" opacity="0.5"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <h1>JARVIS</h1>
+        <p>Just A Rather Very Intelligent System</p>
+      </div>
+    </div>
+    <div class="status-bar">
+      <div class="status-dot">
+        <div class="dot" id="status-dot"></div>
+        <span id="status-label">ONLINE</span>
+      </div>
+      <span id="gate-badge" class="locked" title="Click to authenticate" onclick="openPasswordModal()">🔒 LOCKED</span>
+      <span id="clock">00:00:00</span>
+    </div>
+  </header>
+
+  <!-- CHAT WINDOW -->
+  <div id="chat">
+    <div id="empty-state">
+      <svg viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <polygon points="28,3 53,17 53,39 28,53 3,39 3,17" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        <circle cx="28" cy="28" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        <circle cx="28" cy="28" r="3" fill="currentColor"/>
+      </svg>
+      <p>Awaiting your command</p>
+    </div>
+  </div>
+
+  <!-- INPUT AREA -->
+  <div id="input-area">
+    <div class="quick-cmds">
+      <button class="qcmd" onclick="fillQuery('Open YouTube')">⬡ Open YouTube</button>
+      <button class="qcmd" onclick="fillQuery('Create a text file called notes.txt')">⬡ Create file</button>
+      <button class="qcmd" onclick="fillQuery('What can you do?')">⬡ Capabilities</button>
+      <button class="qcmd" onclick="fillQuery('Tell me a fun fact')">⬡ Fun fact</button>
+    </div>
+    <div class="input-row">
+      <div class="input-wrap">
+        <span class="input-prefix">&gt;_</span>
+        <textarea
+          id="query"
+          rows="1"
+          placeholder="Issue command to Jarvis..."
+          autocomplete="off"
+          spellcheck="false"
+        ></textarea>
+      </div>
+      <button id="send-btn" onclick="sendQuery()" title="Send (Enter)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      </button>
+    </div>
+    <div class="footer-info">
+      <span>ENTER to send &nbsp;·&nbsp; SHIFT+ENTER for newline</span>
+      <span id="char-count">0 chars</span>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ── CLOCK ──
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      now.toTimeString().slice(0,8);
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // ── ELEMENTS ──
+  const chatEl   = document.getElementById('chat');
+  const queryEl  = document.getElementById('query');
+  const sendBtn  = document.getElementById('send-btn');
+  const charCount= document.getElementById('char-count');
+  const emptyState = document.getElementById('empty-state');
+
+  let isWaiting = false;
+
+  // ── AUTO-RESIZE TEXTAREA ──
+  queryEl.addEventListener('input', () => {
+    queryEl.style.height = 'auto';
+    queryEl.style.height = Math.min(queryEl.scrollHeight, 120) + 'px';
+    charCount.textContent = queryEl.value.length + ' chars';
+    charCount.style.color = queryEl.value.length > 200 ? '#ff4060' : '';
+  });
+
+  // ── ENTER TO SEND ──
+  queryEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (!isWaiting) sendQuery();
+    }
+  });
+
+  // ── QUICK FILL ──
+  function fillQuery(text) {
+    queryEl.value = text;
+    queryEl.dispatchEvent(new Event('input'));
+    queryEl.focus();
+  }
+
+  // ── APPEND MESSAGE ──
+  function appendMsg(role, text) {
+    if (emptyState) emptyState.style.display = 'none';
+
+    const isJarvis = role === 'jarvis';
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+
+    div.innerHTML = `
+      <div class="msg-avatar">${isJarvis ? 'JAI' : 'YOU'}</div>
+      <div class="msg-body">
+        <div class="msg-label">${isJarvis ? '// JARVIS' : '// USER'} &nbsp;·&nbsp; ${new Date().toLocaleTimeString()}</div>
+        <div class="msg-content">${escapeHtml(text)}</div>
+      </div>`;
+
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  // ── TYPING INDICATOR ──
+  function showTyping() {
+    if (emptyState) emptyState.style.display = 'none';
+    const div = document.createElement('div');
+    div.className = 'msg jarvis typing-msg';
+    div.id = 'typing-indicator';
+    div.innerHTML = `
+      <div class="msg-avatar">JAI</div>
+      <div class="msg-body">
+        <div class="msg-label">// JARVIS &nbsp;·&nbsp; processing</div>
+        <div class="msg-content">
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+        </div>
+      </div>`;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  function hideTyping() {
+    const t = document.getElementById('typing-indicator');
+    if (t) t.remove();
+  }
+
+  // ── PASSWORD GATE STATE ──
+  let _pendingQuery = null; // query that triggered the gate — re-sent after unlock
+
+  function updateGateBadge(unlocked) {
+    const badge = document.getElementById('gate-badge');
+    if (!badge) return;
+    if (unlocked) {
+      badge.textContent = '🔓 UNLOCKED';
+      badge.className = 'unlocked';
+      badge.title = 'Critical commands authorized';
+    } else {
+      badge.textContent = '🔒 LOCKED';
+      badge.className = 'locked';
+      badge.title = 'Click to authenticate';
+    }
+  }
+
+  function openPasswordModal(sub) {
+    const modal = document.getElementById('password-modal');
+    if (sub) document.getElementById('modal-sub').textContent = sub;
+    document.getElementById('modal-error').textContent = '';
+    document.getElementById('modal-attempts').textContent = '';
+    document.getElementById('modal-pass-field').value = '';
+    modal.classList.add('active');
+    setTimeout(() => document.getElementById('modal-pass-field').focus(), 80);
+  }
+
+  function closePasswordModal() {
+    document.getElementById('password-modal').classList.remove('active');
+  }
+
+  async function submitPassword() {
+    const pw = document.getElementById('modal-pass-field').value.trim();
+    if (!pw) {
+      document.getElementById('modal-error').textContent = 'please enter a password';
+      return;
+    }
+    try {
+      const res = await fetch('http://localhost:5000/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw })
+      });
+      const data = await res.json();
+      if (data.success) {
+        closePasswordModal();
+        updateGateBadge(true);
+        appendMsg('jarvis', data.message);
+        // Re-send the original query that triggered the gate
+        if (_pendingQuery) {
+          const q = _pendingQuery;
+          _pendingQuery = null;
+          await _sendToJarvis(q);
+        }
+      } else {
+        document.getElementById('modal-error').textContent = data.message || 'wrong password';
+        if (data.locked_out) {
+          document.getElementById('modal-attempts').textContent = 'locked out for this session — restart Jarvis to reset';
+          setTimeout(closePasswordModal, 2800);
+        } else {
+          document.getElementById('modal-attempts').textContent =
+            data.attempts_left + ' attempt' + (data.attempts_left === 1 ? '' : 's') + ' remaining';
+        }
+        document.getElementById('modal-pass-field').value = '';
+        document.getElementById('modal-pass-field').focus();
+      }
+    } catch(err) {
+      document.getElementById('modal-error').textContent = 'server error — is Jarvis running?';
+    }
+  }
+
+  async function skipPassword() {
+    try {
+      await fetch('http://localhost:5000/unlock_skip', { method: 'POST' });
+    } catch(e) {}
+    closePasswordModal();
+    _pendingQuery = null;
+    appendMsg('jarvis', '⏭ skipped — critical commands disabled for this session babe');
+  }
+
+  // Poll gate status on load
+  async function refreshGateStatus() {
+    try {
+      const res = await fetch('http://localhost:5000/gate_status');
+      const data = await res.json();
+      updateGateBadge(data.unlocked);
+    } catch(e) {}
+  }
+  refreshGateStatus();
+
+  // ── INTERNAL: send a query to /ask and display the reply ──
+  async function _sendToJarvis(text) {
+    showTyping();
+    try {
+      const response = await fetch('http://localhost:5000/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: text })
+      });
+      const data = await response.json();
+      hideTyping();
+
+      if (data.needs_password) {
+        // Server says this is a critical command — show the modal
+        _pendingQuery = text;
+        openPasswordModal(data.reply);
+      } else {
+        appendMsg('jarvis', data.reply);
+        refreshGateStatus();
+      }
+    } catch(err) {
+      hideTyping();
+      appendMsg('jarvis', '[SYSTEM FAULT]: ' + err.message);
+      document.getElementById('status-dot').classList.add('offline');
+      document.getElementById('status-label').textContent = 'ERROR';
+    }
+  }
+
+  // ── SEND ──
+  async function sendQuery() {
+    const text = queryEl.value.trim();
+    if (!text || isWaiting) return;
+
+    // ── Inline password shortcuts ──
+    const lower = text.toLowerCase();
+    if (lower.startsWith('password:')) {
+      const pw = text.slice('password:'.length).trim();
+      appendMsg('user', text);
+      queryEl.value = '';
+      queryEl.style.height = 'auto';
+      charCount.textContent = '0 chars';
+      try {
+        const res = await fetch('http://localhost:5000/unlock', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw })
+        });
+        const data = await res.json();
+        updateGateBadge(data.success);
+        appendMsg('jarvis', data.message);
+        if (data.success && _pendingQuery) {
+          const q = _pendingQuery;
+          _pendingQuery = null;
+          await _sendToJarvis(q);
+        }
+      } catch(err) {
+        appendMsg('jarvis', '[SYSTEM FAULT]: ' + err.message);
+      }
+      queryEl.focus();
+      return;
+    }
+
+    if (lower === 'skip password') {
+      appendMsg('user', text);
+      queryEl.value = '';
+      queryEl.style.height = 'auto';
+      charCount.textContent = '0 chars';
+      await skipPassword();
+      queryEl.focus();
+      return;
+    }
+
+    isWaiting = true;
+    sendBtn.disabled = true;
+
+    appendMsg('user', text);
+    queryEl.value = '';
+    queryEl.style.height = 'auto';
+    charCount.textContent = '0 chars';
+
+    await _sendToJarvis(text);
+
+    isWaiting = false;
+    sendBtn.disabled = false;
+    queryEl.focus();
+  }
+
+  // ── UTILS ──
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/\n/g,'<br>');
+  }
+
+  // focus on load
+  queryEl.focus();
+
+  // ── EEL YAPPING SUPPORT ──
+  // When running via jarvis.py (eel mode), Python calls eel.receive_jarvis_yap(msg)
+  // This function must be exposed so unprompted messages appear in the chat.
+  function receive_jarvis_yap(message) {
+    appendMsg('jarvis', message);
+    const label = document.getElementById('status-label');
+    const dot   = document.getElementById('status-dot');
+    const orig  = label.textContent;
+    label.textContent = 'NEW MSG !!';
+    label.style.color = 'var(--accent)';
+    dot.style.background = 'var(--accent)';
+    dot.style.boxShadow  = '0 0 12px var(--accent)';
+    setTimeout(() => {
+      label.textContent  = orig;
+      label.style.color  = '';
+      dot.style.background = '';
+      dot.style.boxShadow  = '';
+    }, 4000);
+  }
+  // Expose to eel if eel is available (jarvis.py mode)
+  if (typeof eel !== 'undefined') {
+    eel.expose(receive_jarvis_yap);
+  }
+
+  // ── JARVIS YAPPING ENGINE ──
+  // This receives her random unprompted messages from the Python background thread
+ // Poll for unprompted Jarvis messages every 2 seconds
+  setInterval(async () => {
+    try {
+      const res = await fetch('http://localhost:5000/yap_poll');
+      const data = await res.json();
+      if (data.message) {
+        appendMsg('jarvis', data.message);
+        const label = document.getElementById('status-label');
+        const dot   = document.getElementById('status-dot');
+        const orig  = label.textContent;
+        label.textContent = 'NEW MSG !!';
+        label.style.color = 'var(--accent)';
+        dot.style.background = 'var(--accent)';
+        dot.style.boxShadow  = '0 0 12px var(--accent)';
+        setTimeout(() => {
+          label.textContent  = orig;
+          label.style.color  = '';
+          dot.style.background = '';
+          dot.style.boxShadow  = '';
+        }, 4000);
+      }
+    } catch(err) {}
+  }, 2000);
+</script>
+</body>
+</html>
