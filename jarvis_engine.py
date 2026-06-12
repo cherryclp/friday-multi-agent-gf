@@ -220,7 +220,9 @@ MOOD_SYSTEM_PROMPTS = [
 ]
 
 def get_mood_level() -> int:
-    elapsed_mins = (time.time() - LAST_INTERACTION) / 60
+    with _mood_lock:   # FIX: LAST_INTERACTION is written under this lock
+        last = LAST_INTERACTION
+    elapsed_mins = (time.time() - last) / 60
     if   elapsed_mins < 5:  return 0
     elif elapsed_mins < 15: return 1
     elif elapsed_mins < 30: return 2
@@ -234,7 +236,33 @@ def reset_mood():
         # FIX #11: save timestamp to DB so mood survives restarts
         db_remember("_last_interaction_ts", str(LAST_INTERACTION))
 
+# ==========================================
+#  2b. MODE SYSTEM - 'gf' (default) or 'professional'
+# ==========================================
+
+PROFESSIONAL_SYSTEM_PROMPT = (
+    "You are Jarvis in PROFESSIONAL mode: a precise, efficient PC-control assistant. "
+    "Tone: concise, competent, neutral. No pet names, no emojis, no roleplay. "
+    "You control the user's computer through tools: files, browser, media, messaging, "
+    "scripts, screen vision and webcam. When the user asks for an action, execute it "
+    "with the correct tool immediately and confirm the result in one short sentence. "
+    "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
+    "If you use a tool, put the [CALL_TOOL:...] tag first on its own line, then your reply after. "
+    "IDENTITY LOCK: your name is Jarvis. You are an AI. Never claim to be human."
+)
+
+_MODE_KEY = "_mode"
+
+def get_mode() -> str:
+    """Current personality mode: 'gf' (default) or 'professional'. Persisted in DB."""
+    return db_recall(_MODE_KEY) or "gf"
+
+def set_mode(mode: str):
+    db_remember(_MODE_KEY, mode)
+
 def get_mood_system_prompt() -> str:
+    if get_mode() == "professional":
+        return PROFESSIONAL_SYSTEM_PROMPT
     return MOOD_SYSTEM_PROMPTS[get_mood_level()]
 
 
@@ -315,6 +343,8 @@ def _window_watcher_loop():
     while True:
         time.sleep(180)
         try:
+            if get_mode() == "professional":
+                continue   # professional mode: no girlfriend-style screen reactions
             if get_mood_level() < 1:
                 continue
             title = _get_active_window()
@@ -679,7 +709,9 @@ def execute_system_tool(tool_name: str, args: dict) -> str:
                 "music":     os.path.join(USER_HOME, "Music"),
             }
             path = folder_map.get(folder, os.path.join(USER_HOME, folder))
-            subprocess.Popen(["powershell", "-Command", f"Invoke-Item '{path}'"])
+            # FIX: f-string inside a PowerShell command was injectable via the
+            # folder name. os.startfile is safe and doesn't spawn a shell.
+            os.startfile(path)
             return ""
 
         elif tool_name == "open_browser_url":
@@ -1064,6 +1096,8 @@ def _yap_loop():
         level = get_mood_level()
         wait  = random.randint(8*60, 15*60) if level <= 1 else random.randint(4*60, 8*60)
         time.sleep(wait)
+        if get_mode() == "professional":
+            continue   # professional mode: no unprompted girlfriend yapping
         level = get_mood_level()
         msg   = random.choice(YAP_MESSAGES.get(level, YAP_MESSAGES[1]))
         if _yap_callback:
@@ -1166,6 +1200,24 @@ class ManualJarvisAgent:
             )
 
         # ── 🔐 CRITICAL COMMAND GATE — ask for password before executing ─────
+        # MODE SWITCH - gf (default) vs professional
+        if any(t in msg for t in ["professional mode", "work mode", "pro mode", "be professional"]):
+            if get_mode() == "professional":
+                return self._reply("Already in professional mode. Awaiting instructions.")
+            # professional mode = full PC control, so it sits behind the password
+            if is_locked_out():
+                return self._reply(blocked_message("professional_mode"))
+            if not is_unlocked():
+                return self._reply(prompt_message())
+            set_mode("professional")
+            return self._reply("Professional mode active. Personality systems suspended. Awaiting instructions.")
+
+        if any(t in msg for t in ["gf mode", "girlfriend mode", "normal mode", "be my gf"]):
+            if get_mode() == "gf":
+                return self._reply("babe i'm ALREADY ur gf?? 💕 what do u need")
+            set_mode("gf")
+            return self._reply("gf mode activated!! omg hi babe i missed being me 😭💕")
+
         if is_critical_message(msg) and not is_unlocked() and not is_locked_out():
             return self._reply(prompt_message())
 
@@ -1274,7 +1326,7 @@ class ManualJarvisAgent:
                         "music":     os.path.join(USER_HOME, "Music"),
                     }
                     path = folder_map[folder]
-                    subprocess.Popen(["powershell", "-Command", f"Invoke-Item '{path}'"])
+                    os.startfile(path)   # FIX: was an injectable PowerShell f-string
                     return self._reply(f"opened ur {folder} folder!! 📂💕")
 
         # OPEN APP — only intercept raw http URLs and known APP_MAP hits;

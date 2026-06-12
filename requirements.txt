@@ -1,0 +1,25 @@
+# UI / server
+eel
+flask
+flask-cors
+
+# LLM
+langchain-openai
+
+# System control
+psutil
+pyautogui
+pyperclip
+pygetwindow
+keyboard
+websockets
+requests
+
+# Vision / webcam
+opencv-contrib-python
+numpy
+pillow
+mss
+
+# Media
+yt-dlp

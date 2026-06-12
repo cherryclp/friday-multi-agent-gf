@@ -1,0 +1,14 @@
+stages:
+  - lint
+
+lint:
+  stage: lint
+  image: python:3.12
+  script:
+    - pip install ruff
+    # E9/F63/F7/F82 = syntax errors and undefined names only (project is
+    # Windows-only, so style rules are kept out of the gate for now)
+    - ruff check . --select E9,F63,F7,F82
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

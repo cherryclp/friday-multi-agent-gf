@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import threading
 import asyncio
+import queue
 
 from avatar_controller import JarvisAvatar
 from jarvis_engine import jarvis_agent, config, set_yap_callback, start_yapping, set_window_reaction_callback, start_window_watcher
@@ -34,7 +35,7 @@ _yap_callback_fn = None
 
 def _push_to_ui(message: str):
     # We'll use Server-Sent Events or polling — stored in a queue
-    _yap_queue.append(message)
+    _yap_queue.put(message)
     # FIX: run_vts was called directly here, blocking the callback thread.
     # Use a daemon thread just like the /ask route does.
     try:
@@ -46,7 +47,8 @@ def _push_to_ui(message: str):
     except Exception:
         pass
 
-_yap_queue = []
+# FIX: plain list was mutated from multiple threads - use a thread-safe queue
+_yap_queue = queue.Queue()
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -70,10 +72,10 @@ def ask():
 @app.route("/yap_poll", methods=["GET"])
 def yap_poll():
     # Electron polls this to get unprompted messages (yaps)
-    if _yap_queue:
-        msg = _yap_queue.pop(0)
-        return jsonify({"message": msg})
-    return jsonify({"message": None})
+    try:
+        return jsonify({"message": _yap_queue.get_nowait()})
+    except queue.Empty:
+        return jsonify({"message": None})
 
 @app.route("/unlock", methods=["POST"])
 def unlock():
@@ -137,4 +139,5 @@ def start_background_services():
 if __name__ == "__main__":
     print(">> Starting Jarvis backend server...")
     threading.Thread(target=start_background_services, daemon=True).start()
-    app.run(port=5000, debug=False)
+    # bind to localhost only - never expose the PC-control API on the network
+    app.run(host="127.0.0.1", port=5000, debug=False)

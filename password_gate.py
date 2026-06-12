@@ -13,7 +13,25 @@ import threading
 # Change this to your password. Stored as SHA-256 hash so
 # plain text is never in memory at runtime.
 # Default password: jarvis123  ← CHANGE THIS BABE 💕
-_PASSWORD_HASH = hashlib.sha256(b"jarvis123").hexdigest()
+# SECURITY FIX: password now comes from the JARVIS_PASSWORD environment
+# variable and is hashed with salted PBKDF2 instead of plain SHA-256.
+# Falls back to 'jarvis123' ONLY if the env var is missing - set it!
+import os as _os
+
+_PBKDF2_ITERATIONS = 200_000
+_SALT = b"jarvis-gate-v1"
+
+def _hash_password(pw: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", pw.strip().encode(), _SALT, _PBKDF2_ITERATIONS
+    ).hex()
+
+_env_pw = _os.environ.get("JARVIS_PASSWORD")
+if _env_pw:
+    _PASSWORD_HASH = _hash_password(_env_pw)
+else:
+    print("[GATE] WARNING: JARVIS_PASSWORD env var not set - using default password 'jarvis123'. CHANGE THIS!")
+    _PASSWORD_HASH = _hash_password("jarvis123")
 
 MAX_ATTEMPTS = 2
 
@@ -90,7 +108,7 @@ def attempt_unlock(password: str) -> bool:
         if _locked_out:
             return False
 
-        guess_hash = hashlib.sha256(password.strip().encode()).hexdigest()
+        guess_hash = _hash_password(password)
         _attempts_used += 1
 
         if guess_hash == _PASSWORD_HASH:
@@ -134,13 +152,13 @@ def change_password(old_password: str, new_password: str) -> tuple[bool, str]:
     Returns (success: bool, message: str).
     """
     global _PASSWORD_HASH, _unlocked, _locked_out, _attempts_used
-    old_hash = hashlib.sha256(old_password.strip().encode()).hexdigest()
+    old_hash = _hash_password(old_password)
     with _lock:
         if old_hash != _PASSWORD_HASH:
             return False, "❌ old password is wrong babe 😤 try again"
         if not new_password.strip():
             return False, "❌ new password can't be empty babe"
-        _PASSWORD_HASH = hashlib.sha256(new_password.strip().encode()).hexdigest()
+        _PASSWORD_HASH = _hash_password(new_password)
         # FIX: reset session so user must re-authenticate with new password.
         # Without this, the session stays permanently unlocked after a change.
         _unlocked      = False
