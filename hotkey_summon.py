@@ -46,6 +46,11 @@ def _force_focus(hwnd):
     """
     Windows blocks SetForegroundWindow unless ur process is already in the
     foreground. The workaround: attach to the foreground thread first.
+
+    FIX B23: Note: there's a known race condition here — if the foreground
+    window changes between GetWindowThreadProcessId and AttachThreadInput,
+    the focus steal may fail. This is inherent to the Win32 API workaround.
+    Retrying the whole function usually succeeds on the 2nd attempt.
     """
     try:
         SW_RESTORE = 9
@@ -88,7 +93,16 @@ def _find_jarvis_window():
                 wins = gw.getWindowsWithTitle(title)
                 if wins:
                     win = wins[0]
-                    hwnd = win._hWnd
+                    # FIX B22: access hwnd through a more robust method
+                    # win._hWnd is private — use getters if available, else fallback
+                    try:
+                        hwnd = win._hWnd
+                    except AttributeError:
+                        try:
+                            hwnd = win.get_hwnd()
+                        except AttributeError:
+                            print(f"[HOTKEY] found '{title}' but can't get hwnd")
+                            return None, None
                     print(f"[HOTKEY] found window: '{title}' (hwnd={hwnd})")
                     return hwnd, title
     except Exception as e:

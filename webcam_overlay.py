@@ -10,6 +10,7 @@ import os
 import threading
 import time
 import tkinter as tk
+from collections import deque
 import numpy as np
 from PIL import Image, ImageTk, ImageDraw, ImageFilter
 
@@ -21,7 +22,12 @@ FPS_TARGET   = 20
 CORNER       = "bottom-right"
 MARGIN       = 18
 LABEL_TEXT   = "👀 watching u babe"
-CONFIDENCE_THRESHOLD = 85.0
+
+# ── Adaptive threshold mirror (same constants as webcam_recognition) ──
+_BASE_THRESHOLD    = 160.0
+_BRIGHT_TARGET     = 120
+_THRESHOLD_RANGE   = 60
+_SHARPNESS_MIN     = 30
 
 JARVIS_DIR  = os.path.dirname(os.path.abspath(__file__))
 ENROLL_FILE = os.path.join(JARVIS_DIR, "face_data", "enrolled.json")
@@ -31,36 +37,47 @@ FACE_MODEL  = os.path.join(JARVIS_DIR, "face_data", "face_model.yml")
 _frontal = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 _alt2    = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_alt2.xml")
 
+# ── Face Database mirror (reads what webcam_recognition writes) ──
+FACE_DB_PATH = os.path.join(JARVIS_DIR, "face_data", "face_db.json")
+
 def _get_largest_face(gray):
     h, w   = gray.shape
-    min_sz = max(80, int(w * 0.12))
-    faces  = _frontal.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=7, minSize=(min_sz, min_sz))
+    min_sz = max(100, int(w * 0.15))   # match enrollment (15% of frame width)
+    faces  = _frontal.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=8, minSize=(min_sz, min_sz), flags=cv2.CASCADE_SCALE_IMAGE)
     if len(faces) == 0:
-        faces = _alt2.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(min_sz, min_sz))
+        faces = _alt2.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(min_sz, min_sz), flags=cv2.CASCADE_SCALE_IMAGE)
     if len(faces) == 0:
         return None
     return max(faces, key=lambda f: f[2] * f[3])
 
-def _get_enrolled_name():
+def _load_label_to_name() -> dict:
+    """Load the label → name mapping from the face database."""
     try:
-        if os.path.exists(ENROLL_FILE):
-            with open(ENROLL_FILE) as f:
-                return json.load(f).get("name", "babe")
-    except Exception:
-        pass
-    return "babe"
+        if os.path.exists(FACE_DB_PATH):
+            with open(FACE_DB_PATH) as f:
+                db = json.load(f)
+            return {v["label"]: k for k, v in db.get("persons", {}).items()}
+    except Exception as e:
+        print(f"[OVERLAY] _load_label_to_name error: {e}")
+    return {}
 
-ENROLLED_NAME = _get_enrolled_name()
 _recognizer   = None
+_label_to_name = _load_label_to_name()
+
+# Rolling prediction buffer for stable overlay status
+_pred_buffer   = deque(maxlen=3)
+_pred_buf_lock = threading.Lock()
 
 def _load_recognizer():
-    global _recognizer
+    global _recognizer, _label_to_name
     if os.path.exists(FACE_MODEL):
         try:
             r = cv2.face.LBPHFaceRecognizer_create()
             r.read(FACE_MODEL)
             _recognizer = r
-            print(f"[OVERLAY] face model loaded for '{ENROLLED_NAME}' ✅")
+            _label_to_name = _load_label_to_name()
+            names = list(_label_to_name.values())
+            print(f"[OVERLAY] face model loaded with {len(names)} person(s): {', '.join(names)} ✅")
         except Exception as e:
             print(f"[OVERLAY] could not load face model: {e}")
 
@@ -74,18 +91,56 @@ def _set_status(s):
 def _get_status():
     with _status_lock: return _status
 
+def _get_dynamic_threshold(brightness: float, sharpness: float) -> float:
+    """Mirror of webcam_recognition's adaptive threshold logic."""
+    bright_factor = (_BRIGHT_TARGET - brightness) / _BRIGHT_TARGET
+    bright_factor = max(-1.0, min(1.0, bright_factor))
+    sharp_factor  = (_SHARPNESS_MIN - sharpness) / _SHARPNESS_MIN
+    sharp_factor  = max(-1.0, min(1.0, sharp_factor))
+    offset = (bright_factor * 0.6 + sharp_factor * 0.4) * _THRESHOLD_RANGE
+    return max(80.0, min(280.0, _BASE_THRESHOLD + offset))
+
+
 def _check_status(gray):
     if _recognizer is None:
         return "👀"
     face = _get_largest_face(gray)
     if face is None:
         return "no face 👻"
+
+    # ── Reload label→name mapping on each check ────────────
+    # This ensures the overlay picks up name changes or new enrollments
+    # without needing to restart the overlay window.
+    global _label_to_name
+    _label_to_name = _load_label_to_name()
+
+    # Estimate lighting for adaptive threshold
+    face_roi = gray[face[1]:face[1]+face[3], face[0]:face[0]+face[2]]
+    if face_roi.size > 0:
+        brightness = float(np.mean(face_roi))
+        sharpness  = float(cv2.Laplacian(face_roi, cv2.CV_64F).var())
+    else:
+        brightness, sharpness = _BRIGHT_TARGET, _SHARPNESS_MIN
+
+    dynamic_threshold = _get_dynamic_threshold(brightness, sharpness)
+
     (x, y, w, h) = face
     roi          = cv2.resize(gray[y:y+h, x:x+w], (100, 100))
     label, conf  = _recognizer.predict(roi)
-    print(f"[OVERLAY] conf={conf:.1f}")
-    if label == 0 and conf < CONFIDENCE_THRESHOLD:
-        return f"hey {ENROLLED_NAME}!! 💕"
+    print(f"[OVERLAY] label={label} conf={conf:.1f} thresh={dynamic_threshold:.0f} bright={brightness:.0f}")
+
+    # Push into rolling buffer — use majority vote for stability
+    with _pred_buf_lock:
+        _pred_buffer.append((label, conf))
+        good = sum(1 for l, c in _pred_buffer if c < dynamic_threshold)
+        total = len(_pred_buffer)
+
+    if good >= total / 2:
+        # Look up the detected label in the label→name map
+        name = _label_to_name.get(label)
+        if name:
+            return f"hey {name}!! 💕"
+        return "👀 known??"
     return "👀 stranger??"
 
 def _centre_crop(bgr):
@@ -126,7 +181,11 @@ def _is_real_frame(frame) -> bool:
       1. Row std  — vertical stripe static has near-identical rows → low row_std
       2. Laplacian variance — blurry/uniform frames fail this
       3. Brightness bounds  — all-black (not ready) or all-white frames rejected
+
+    FIX B27: Added None/empty check for frame before processing.
     """
+    if frame is None or frame.size == 0:
+        return False
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     brightness = float(np.mean(gray))
     if brightness < 5.0 or brightness > 250.0:
@@ -143,19 +202,24 @@ def _is_real_frame(frame) -> bool:
 def _try_open(index: int, backend, backend_name: str, warm_secs: float) -> "cv2.VideoCapture | None":
     """Open camera on one backend, wait warm_secs, validate frames. Returns cap or None."""
     print(f"[OVERLAY] trying backend: {backend_name} (warm-up {warm_secs:.1f}s)")
+    cap = None
     try:
         cap = cv2.VideoCapture(index, backend)
     except Exception:
-        cap = cv2.VideoCapture(index)
+        try:
+            cap = cv2.VideoCapture(index)
+        except Exception:
+            print(f"[OVERLAY]   {backend_name}: both VideoCapture attempts failed")
+            return None
+
+    if cap is None or not cap.isOpened():
+        print(f"[OVERLAY]   {backend_name}: isOpened=False")
+        if cap: cap.release()
+        return None
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
-
-    if not cap.isOpened():
-        print(f"[OVERLAY]   {backend_name}: isOpened=False")
-        cap.release()
-        return None
 
     # Flush warm-up frames
     time.sleep(warm_secs)

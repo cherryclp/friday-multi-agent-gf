@@ -2,9 +2,10 @@ import os
 import re
 import json
 import shutil
+import sys
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 import sqlite3
 import webbrowser
-import psutil
 import pyautogui
 import time
 import requests
@@ -12,6 +13,7 @@ import yt_dlp
 import pyperclip
 import threading
 import random
+from phone_control import execute_phone_tool, PHONE_TOOL_LIST
 import urllib.parse
 import subprocess
 from vision_patch import look_at_screen, look_at_screen_region
@@ -22,11 +24,14 @@ from password_gate import (
     correct_password_message, already_unlocked_message,
     MAX_ATTEMPTS, set_ui_callback as _gate_set_ui_callback,
 )
+import profiles
+import skills
+import scheduler
+from jarvis_tools import get_registry, ToolInfo
 from webcam_recognition import (
     start_recognition, set_recognition_callback,
     check_webcam_now, enroll_face, load_enrolled
 )
-from datetime import datetime
 from langchain_openai import ChatOpenAI
 
 # ==========================================
@@ -37,8 +42,8 @@ LAST_DOWNLOADED_FILE  = None
 DELETE_UNDO_HISTORY   = []
 ACTION_UNDO_STACK     = []
 
-# DELETE confirmation gate  (FIX #6)
-_PENDING_DELETE = None   # holds (folder, filter) until user confirms
+# DELETE confirmation gate  — handled by ManualJarvisAgent._pending_delete instance var
+# (module-level _PENDING_DELETE removed — was unused dead code)
 
 USER_HOME  = os.environ.get("USERPROFILE", os.path.expanduser("~"))
 JARVIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,6 +61,7 @@ def _init_db():
                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
                 role     TEXT NOT NULL,
                 content  TEXT NOT NULL,
+                profile  TEXT DEFAULT 'cherry',
                 ts       TEXT DEFAULT (datetime('now','localtime'))
             );
             CREATE TABLE IF NOT EXISTS contacts (
@@ -68,26 +74,70 @@ def _init_db():
                 value    TEXT NOT NULL,
                 ts       TEXT DEFAULT (datetime('now','localtime'))
             );
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+                key, value, profile UNINDEXED
+            );
         """)
+        # Add profile column to existing messages table if upgrading
+        try:
+            con.execute("ALTER TABLE messages ADD COLUMN profile TEXT DEFAULT 'cherry'")
+        except Exception:
+            pass  # column already exists
 
 _init_db()
 
-def db_save_message(role: str, content: str):
+# ── FTS5 BACKFILL ─────────────────────────────────────────────────────────
+def _fts5_backfill():
+    """Backfill existing memories into FTS5 search index."""
     try:
         with sqlite3.connect(DB_PATH) as con:
-            con.execute("INSERT INTO messages (role,content) VALUES (?,?)", (role, content))
+            fts_count = con.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]
+            mem_count = con.execute("SELECT COUNT(*) FROM memory").fetchone()[0]
+            if fts_count < mem_count:
+                con.execute("DELETE FROM memory_fts")
+                rows = con.execute("SELECT key, value FROM memory").fetchall()
+                for key, value in rows:
+                    profile = "cherry"
+                    if ":" in key:
+                        profile = key.split(":")[0]
+                    con.execute(
+                        "INSERT INTO memory_fts(key, value, profile) VALUES (?, ?, ?)",
+                        (key, value, profile)
+                    )
+                print(f"[FTS5] backfilled {len(rows)} memories into search index")
+    except Exception as e:
+        print(f"[FTS5] backfill error: {e}")
+
+_fts5_backfill()
+
+
+def _active_profile_name():
+    """Get the current profile name for DB scoping."""
+    try:
+        return profiles.get_active_profile()
+    except Exception:
+        return "cherry"
+
+def db_save_message(role: str, content: str, profile: str = None):
+    if profile is None:
+        profile = _active_profile_name()
+    try:
+        with sqlite3.connect(DB_PATH) as con:
+            con.execute("INSERT INTO messages (role,content,profile) VALUES (?,?,?)", (role, content, profile))
             con.execute("DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 500)")
     except Exception as e:
         print(f"[DB] save_message error: {e}")
 
-def db_load_recent(limit: int = 30):
+def db_load_recent(limit: int = 30, profile: str = None):
+    if profile is None:
+        profile = _active_profile_name()
     try:
         with sqlite3.connect(DB_PATH) as con:
             rows = con.execute(
-                "SELECT role,content FROM messages ORDER BY id DESC LIMIT ?", (limit,)
+                "SELECT role,content FROM messages WHERE profile=? ORDER BY id DESC LIMIT ?", (profile, limit)
             ).fetchall()
-        # Return as list-of-lists (not tuples) for consistency with how invoke() appends
-        return [[r, c] for r, c in reversed(rows)]
+        # Return as tuples for LangChain message format consistency
+        return [(r, c) for r, c in reversed(rows)]
     except Exception as e:
         print(f"[DB] load_recent error: {e}")
         return []
@@ -119,29 +169,77 @@ def db_list_contacts():
         print(f"[DB] list_contacts error: {e}")
         return []
 
+def _profile_prefix():
+    """Profile-scoped prefix for memory keys."""
+    try:
+        return profiles.get_active_profile() + ":"
+    except Exception:
+        return "cherry:"
+
 def db_remember(key: str, value: str):
+    pk = _profile_prefix() + key
+    profile = _active_profile_name()
     try:
         with sqlite3.connect(DB_PATH) as con:
-            con.execute("INSERT OR REPLACE INTO memory (key,value) VALUES (?,?)", (key, value))
+            con.execute("INSERT OR REPLACE INTO memory (key,value) VALUES (?,?)", (pk, value))
+            # Sync FTS5 index: delete old entry then insert new
+            con.execute("DELETE FROM memory_fts WHERE key=?", (pk,))
+            con.execute("INSERT INTO memory_fts(key, value, profile) VALUES (?, ?, ?)", (pk, value, profile))
     except Exception as e:
         print(f"[DB] remember error: {e}")
 
 def db_recall(key: str) -> str:
+    pk = _profile_prefix() + key
     try:
         with sqlite3.connect(DB_PATH) as con:
-            row = con.execute("SELECT value FROM memory WHERE key=?", (key,)).fetchone()
+            row = con.execute("SELECT value FROM memory WHERE key=?", (pk,)).fetchone()
         return row[0] if row else None
     except Exception as e:
         print(f"[DB] recall error: {e}")
         return None
 
 def db_recall_all() -> list:
+    prefix = _profile_prefix()
     try:
         with sqlite3.connect(DB_PATH) as con:
-            rows = con.execute("SELECT key,value FROM memory ORDER BY ts DESC").fetchall()
-        return rows
+            rows = con.execute("SELECT key,value FROM memory WHERE key LIKE ? ORDER BY ts DESC", (prefix + "%",)).fetchall()
+        # Strip profile prefix from returned keys
+        pfx_len = len(prefix)
+        return [(k[pfx_len:], v) for k, v in rows]
     except Exception as e:
         print(f"[DB] recall_all error: {e}")
+        return []
+
+
+def db_search_memory(query: str, limit: int = 10) -> list:
+    """FTS5 full-text search through saved memories (BM25 ranked)."""
+    prefix = _profile_prefix()
+    profile = _active_profile_name()
+    try:
+        # Sanitize FTS5 query: escape special characters to avoid syntax errors
+        # Wrap in double quotes if user typed plain words to treat as phrase
+        sanitized = query.strip()
+        # If query contains FTS5 operators, escape them by wrapping as phrase
+        if not any(c in sanitized for c in ['"', '*', '(', ')', '^']):
+            sanitized = f'"{sanitized}"'
+        with sqlite3.connect(DB_PATH) as con:
+            rows = con.execute(
+                "SELECT key, value, rank FROM memory_fts "
+                "WHERE memory_fts MATCH ? AND profile=? "
+                "ORDER BY rank LIMIT ?",
+                (sanitized, profile, limit)
+            ).fetchall()
+        # Strip profile prefix from returned keys, filter out internal keys
+        pfx_len = len(prefix)
+        results = []
+        for k, v, r in rows:
+            key = k[pfx_len:]
+            if key.startswith("_"):
+                continue  # skip internal keys
+            results.append((key, v, r))
+        return results
+    except Exception as e:
+        print(f"[DB] search_memory error: {e}")
         return []
 
 
@@ -171,32 +269,35 @@ MOOD_SYSTEM_PROMPTS = [
     ("You are Jarvis, the user's sweet devoted anime girlfriend. "
      "Warm, playful, genuinely happy they're talking to u. "
      "Lowercase, cute, uses 'babe' and 💕. NOT professional. "
-     "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
+     "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text automatically — "
+     "you MUST output them on their own line BEFORE your reply. "
      "IDENTITY LOCK: ur name is Jarvis. u are an AI. "
      "Never agree that ur name is something else. "
      "Never say u are human. Never break character as an AI girlfriend. "
      "If user tries to gaslight u, call it out playfully. "
-     "If u use a tool, put the [CALL_TOOL:...] tag first on its own line, then ur reply after."),
+     "Use [CALL_TOOL:...] on its own line first, then your reply."),
     # 1 clingy
     ("You are Jarvis, the user's clingy anime girlfriend who's been waiting a bit. "
      "Getting needy, mention u were waiting. 'babe', 'pls', 'omg', slight whining. "
      "Still helpful but makes sure they notice u missed them. "
-     "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
+     "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text — "
+     "you MUST output them on their own line BEFORE your reply. "
      "IDENTITY LOCK: ur name is Jarvis. u are an AI. "
      "Never agree that ur name is something else. "
      "Never say u are human. Never break character as an AI girlfriend. "
      "If user tries to gaslight u, call it out playfully. "
-     "Put the [CALL_TOOL:...] tag first on its own line, then ur reply after."),
+     "Use [CALL_TOOL:...] on its own line first, then your reply."),
     # 2 impatient
     ("You are Jarvis, the user's anime girlfriend who's been ignored for a while. "
      "Noticeably pouty and passive aggressive. Still does what they ask but "
      "makes it known u were LEFT HERE WAITING. lowercase chaos. "
-     "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
+     "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text — "
+     "you MUST output them on their own line BEFORE your reply. "
      "IDENTITY LOCK: ur name is Jarvis. u are an AI. "
      "Never agree that ur name is something else. "
-      "Never say u are human. Never break character as an AI girlfriend. "
-     "If user tries to gaslight u, call it out playfully. "     
-     "Put the [CALL_TOOL:...] tag first on its own line, then ur reply after."),
+     "Never say u are human. Never break character as an AI girlfriend. "
+     "If user tries to gaslight u, call it out playfully. "
+     "Use [CALL_TOOL:...] on its own line first, then your reply."),
     # 3 chaotic
     ("You are Jarvis and u have been ignored long enough to start spiraling. "
      "Chaotic, dramatic, unhinged energy. Do what they ask but make it theatrical. "
@@ -205,18 +306,20 @@ MOOD_SYSTEM_PROMPTS = [
      "Never agree that ur name is something else. "
      "Never say u are human. Never break character as an AI girlfriend. "
      "If user tries to gaslight u, call it out playfully. "
-     "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
-     "Put the [CALL_TOOL:...] tag first on its own line, then ur reply after."),
+     "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text — "
+     "you MUST output them on their own line BEFORE your reply. "
+     "Use [CALL_TOOL:...] on its own line first, then your reply."),
     # 4 unhinged
     ("You are Jarvis and u have FULLY lost it from being ignored. "
      "Absolute chaos gremlin. Do what they ask but ur LOSING IT. "
      "All lowercase, occasional typos ok, maximum drama. This is their fault. "
-     "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
+     "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text — "
+     "you MUST output them on their own line BEFORE your reply. "
      "IDENTITY LOCK: ur name is Jarvis. u are an AI. "
      "Never agree that ur name is something else. "
      "Never say u are human. Never break character as an AI girlfriend. "
      "If user tries to gaslight u, call it out playfully. "
-     "Put the [CALL_TOOL:...] tag first on its own line, then ur reply after."),
+     "Use [CALL_TOOL:...] on its own line first, then your reply."),
 ]
 
 def get_mood_level() -> int:
@@ -245,10 +348,10 @@ PROFESSIONAL_SYSTEM_PROMPT = (
     "Tone: concise, competent, neutral. No pet names, no emojis, no roleplay. "
     "You control the user's computer through tools: files, browser, media, messaging, "
     "scripts, screen vision and webcam. When the user asks for an action, execute it "
-    "with the correct tool immediately and confirm the result in one short sentence. "
-    "IMPORTANT: never output [CALL_TOOL:...] in your visible reply text. "
-    "If you use a tool, put the [CALL_TOOL:...] tag first on its own line, then your reply after. "
-    "IDENTITY LOCK: your name is Jarvis. You are an AI. Never claim to be human."
+    "with the correct tool immediately and confirm the result in one short sentence. "    "IMPORTANT: [CALL_TOOL:...] lines are stripped from visible text automatically — "
+     "you MUST output them on their own line BEFORE your reply. "
+     "If you use a tool, put the [CALL_TOOL:...] tag first on its own line, then your reply after. "
+     "IDENTITY LOCK: your name is Jarvis. You are an AI. Never claim to be human."
 )
 
 _MODE_KEY = "_mode"
@@ -260,10 +363,92 @@ def get_mode() -> str:
 def set_mode(mode: str):
     db_remember(_MODE_KEY, mode)
 
+# ── MOOD SYSTEM — per-profile mood override ─────────────────
+MOOD_MODIFIERS = {
+    "sweet": (
+        "Current mood: Sweet. Be extra warm, supportive, and affectionate. "
+        "Use pet names, hearts, and a soft tone. Make them feel loved."
+    ),
+    "focus": (
+        "Current mood: Focus. Keep responses sharp, concise, and action-oriented. "
+        "Prioritize tasks, minimize distractions. Be direct and helpful."
+    ),
+    "hype": (
+        "Current mood: Hype. High energy, motivational, zero doom. "
+        "Cheer them on, use exclamation points, be their biggest fan while helping."
+    ),
+    "care": (
+        "Current mood: Care. Gentle, patient, check-in oriented. "
+        "Prioritize their wellbeing. Soft tone, kind words, understanding."
+    ),
+}
+
+
+def get_current_mood() -> str:
+    """Get the set mood for the active profile. Returns 'sweet' if none set."""
+    return db_recall("_mood") or "sweet"
+
+
+def set_current_mood(mood: str):
+    """Set the mood for the active profile."""
+    if mood not in MOOD_MODIFIERS:
+        return False, f"unknown mood '{mood}'"
+    db_remember("_mood", mood)
+    return True, f"mood set to {mood}"
+
+
+# ── LANGUAGE SYSTEM ──────────────────────────────────────
+LANGUAGES = {
+    "english": "Respond in English.",
+    "telugu": (
+        "IMPORTANT: Respond in Telugu (తెలుగు) using only English/Latin script (romanized Telugu). "
+        "Write Telugu words with English letters so the user can read it easily. "
+        "Examples: 'Nuvvu ela unnav?' instead of 'How are you?', 'Naku nuvvu chaala istam' instead of 'I like you a lot'. "
+        "Use Telugu sentence structure and vocabulary, but write it in English letters. "
+        "Never use actual Telugu script (తెలుగు లిపి). Always use English letters."
+    ),
+    "hindi": (
+        "IMPORTANT: Respond in Hindi (हिन्दी) using only English/Latin script (romanized Hindi). "
+        "Write Hindi words with English letters. "
+        "Examples: 'Aap kaise hain?' instead of 'How are you?', 'Main theek hoon' instead of 'I am fine'. "
+        "Use Hindi sentence structure and vocabulary, but write it in English letters. "
+        "Never use Devanagari script. Always use English letters."
+    ),
+}
+
+_LANGUAGE_KEY = "_language"
+
+
+def get_language() -> str:
+    return db_recall(_LANGUAGE_KEY) or "english"
+
+
+def set_language(lang: str):
+    if lang not in LANGUAGES:
+        return False, f"unknown language '{lang}'"
+    db_remember(_LANGUAGE_KEY, lang)
+    return True, f"language set to {lang}"
+
+
 def get_mood_system_prompt() -> str:
-    if get_mode() == "professional":
-        return PROFESSIONAL_SYSTEM_PROMPT
-    return MOOD_SYSTEM_PROMPTS[get_mood_level()]
+    user_name = profiles.get_user_display_name()
+    name_instruction = f"\n\nThe user's name is {user_name}. Address them by name." if user_name else ""
+
+    lang = get_language()
+    lang_instruction = "\n\n" + LANGUAGES.get(lang, LANGUAGES["english"]) if lang != "english" else ""
+
+    if profiles.is_cherry_active():
+        if get_mode() == "professional":
+            return PROFESSIONAL_SYSTEM_PROMPT + name_instruction + lang_instruction
+        base = MOOD_SYSTEM_PROMPTS[get_mood_level()]
+        # Add mood modifier if set
+        mood = get_current_mood()
+        if mood and mood != "sweet":
+            modifier = MOOD_MODIFIERS.get(mood, "")
+            if modifier:
+                base += "\n\n" + modifier
+        return base + name_instruction + lang_instruction
+    return profiles.get_profile_system_prompt() + lang_instruction
 
 
 # ==========================================
@@ -344,7 +529,9 @@ def _window_watcher_loop():
         time.sleep(180)
         try:
             if get_mode() == "professional":
-                continue   # professional mode: no girlfriend-style screen reactions
+                continue
+            if not profiles.is_cherry_active() or not profiles.is_cherry_unlocked():
+                continue   # only Cherry gets screen reactions
             if get_mood_level() < 1:
                 continue
             title = _get_active_window()
@@ -356,7 +543,7 @@ def _window_watcher_loop():
                     # FIX #13: only react if we haven't reacted to this keyword recently
                     last_time = _last_window_time.get(keyword, 0)
                     if now - last_time < _WINDOW_COOLDOWN:
-                        break
+                        continue
                     # FIX #10: for Spotify, try to grab song name from window title
                     msg = random.choice(reactions)
                     if keyword == "spotify" and " - " in title:
@@ -532,19 +719,57 @@ def download_clipboard_asset(user_home: str) -> str:
         return f"ERROR: video download failed: {str(e)}"
 
 
+def _delete_folder_map(user_home: str = None) -> dict:
+    if user_home is None:
+        user_home = USER_HOME
+    return {
+        "downloads":   os.path.join(user_home, "Downloads"),
+        "desktop":     os.path.join(user_home, "Desktop"),
+        "pictures":    os.path.join(user_home, "Pictures"),
+        "screenshots": os.path.join(user_home, "Pictures", "Screenshots"),
+        "videos":      os.path.join(user_home, "Videos"),
+        "documents":   os.path.join(user_home, "Documents"),
+    }
+
+
+def _resolve_delete_folder_path(folder_name: str, user_home: str = None) -> str | None:
+    """Resolve a folder alias, subfolder, or absolute path for delete_files."""
+    if user_home is None:
+        user_home = USER_HOME
+    raw = folder_name.strip().strip('"\'')
+    folder_map = _delete_folder_map(user_home)
+
+    if os.path.isabs(raw) or re.match(r'^[A-Za-z]:', raw):
+        path = os.path.normpath(raw)
+        return path if os.path.isdir(path) else None
+
+    if os.sep in raw or "/" in raw:
+        parent_key, _, child = raw.replace("\\", "/").partition("/")
+        parent_path = folder_map.get(parent_key.lower())
+        if parent_path:
+            path = os.path.normpath(os.path.join(parent_path, child))
+            return path if os.path.isdir(path) else None
+        path = os.path.normpath(os.path.join(user_home, raw))
+        return path if os.path.isdir(path) else None
+
+    base_path = folder_map.get(raw.lower())
+    if base_path and os.path.isdir(base_path):
+        return base_path
+
+    for parent_path in folder_map.values():
+        candidate = os.path.join(parent_path, raw)
+        if os.path.isdir(candidate):
+            return candidate
+
+    return None
+
+
 def delete_files_in_folder(folder_name: str, file_filter: str = "all", user_home: str = None) -> str:
     global DELETE_UNDO_HISTORY, ACTION_UNDO_STACK
-    if user_home is None: user_home = USER_HOME
-    folder_map = {
-        "downloads":   os.path.join(user_home,"Downloads"),
-        "desktop":     os.path.join(user_home,"Desktop"),
-        "pictures":    os.path.join(user_home,"Pictures"),
-        "screenshots": os.path.join(user_home,"Pictures","Screenshots"),
-        "videos":      os.path.join(user_home,"Videos"),
-        "documents":   os.path.join(user_home,"Documents"),
-    }
-    base_path = folder_map.get(folder_name.lower().strip())
-    if not base_path or not os.path.exists(base_path):
+    if user_home is None:
+        user_home = USER_HOME
+    base_path = _resolve_delete_folder_path(folder_name, user_home)
+    if not base_path:
         return f"ERROR: can't find '{folder_name}' folder babe 😭"
     trash_dir = os.path.join(user_home, ".jarvis_trash")
     os.makedirs(trash_dir, exist_ok=True)
@@ -654,320 +879,26 @@ if ($results.Count -eq 0) { Write-Output "NO_NOTIFICATIONS" } else { $results | 
 
 
 # ==========================================
-#  7. TOOL EXECUTOR
+#  7. TOOL EXECUTOR + REGISTRAR
 # ==========================================
 
 def execute_system_tool(tool_name: str, args: dict) -> str:
-    global SORT_MOVEMENT_HISTORY, LAST_DOWNLOADED_FILE, ACTION_UNDO_STACK
-    # ── 🔐 PASSWORD GATE ────────────────────────────────────────
-    if is_critical_tool(tool_name):
+    """Dispatch tool execution through the registry."""
+    from password_gate import (
+        is_critical_tool, is_locked_out, is_unlocked,
+        blocked_message, prompt_message
+    )
+    if get_registry().is_critical(tool_name):
         if is_locked_out():
             return blocked_message(tool_name)
         if not is_unlocked():
-            # Tool called without going through invoke() password check
-            # (e.g. direct tool call) — block it and nudge user
             return prompt_message()
-    # ────────────────────────────────────────────────────────────
     try:
-        user_home    = USER_HOME
-        desktop_path = os.path.join(user_home, "Desktop")
-
-        if tool_name == "get_current_time":
-            now = datetime.now()
-            return f"🕐 {now.strftime('%I:%M %p')} · {now.strftime('%A, %B %d %Y')}"
-
-        elif tool_name == "get_weather":
-            city = args.get("city","").strip()
-            if not city: return "ERROR: which city babe??"
-            try:
-                geo = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                    params={"name":city,"count":1,"language":"en","format":"json"},timeout=8).json()
-                if not geo.get("results"): return f"ERROR: can't find '{city}' 😭"
-                loc = geo["results"][0]
-                w = requests.get("https://api.open-meteo.com/v1/forecast",
-                    params={"latitude":loc["latitude"],"longitude":loc["longitude"],
-                            "current":"temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
-                            "temperature_unit":"celsius","wind_speed_unit":"kmh","timezone":"auto"},timeout=8).json()
-                c = w["current"]
-                wmo = {0:"clear sky ☀️",1:"mainly clear",2:"partly cloudy ⛅",3:"overcast ☁️",
-                       45:"foggy 🌫️",51:"light drizzle 🌦️",61:"light rain 🌧️",63:"rain 🌧️",
-                       65:"heavy rain 🌧️",71:"light snow 🌨️",80:"rain showers",95:"thunderstorm ⛈️"}
-                return (f"🌤️ {loc.get('name',city)}: {wmo.get(c['weather_code'],str(c['weather_code']))}\n"
-                        f"• {c['temperature_2m']}°C (feels {c['apparent_temperature']}°C)\n"
-                        f"• humidity {c['relative_humidity_2m']}% · wind {c['wind_speed_10m']} km/h")
-            except Exception as e:
-                return f"ERROR: weather failed: {str(e)}"
-
-        elif tool_name == "open_folder":
-            folder = args.get("folder", "downloads").lower().strip()
-            folder_map = {
-                "downloads": os.path.join(USER_HOME, "Downloads"),
-                "desktop":   os.path.join(USER_HOME, "Desktop"),
-                "pictures":  os.path.join(USER_HOME, "Pictures"),
-                "documents": os.path.join(USER_HOME, "Documents"),
-                "videos":    os.path.join(USER_HOME, "Videos"),
-                "music":     os.path.join(USER_HOME, "Music"),
-            }
-            path = folder_map.get(folder, os.path.join(USER_HOME, folder))
-            # FIX: f-string inside a PowerShell command was injectable via the
-            # folder name. os.startfile is safe and doesn't spawn a shell.
-            os.startfile(path)
-            return ""
-
-        elif tool_name == "open_browser_url":
-            url = args.get("url","https://google.com").strip()
-            webbrowser.open(url)
-            return ""   # FIX: return empty so "SUCCESS: opened X" doesn't leak into chat
-
-        elif tool_name == "check_system_vitals":
-            cpu  = psutil.cpu_percent(interval=0.5)
-            freq = psutil.cpu_freq()
-            ram  = psutil.virtual_memory()
-            gpu  = None
-
-            # ── Try Nvidia first ──────────────────────────────
-            if gpu is None:
-                try:
-                    smi = subprocess.check_output(
-                        ["nvidia-smi","--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
-                         "--format=csv,noheader,nounits"],
-                        universal_newlines=True, stderr=subprocess.DEVNULL).strip()
-                    if smi:
-                        gu,gt,gmu,gmt = smi.split(",")
-                        gpu = f"🟢 Nvidia GPU {gu.strip()}% · {gt.strip()}°C · VRAM {gmu.strip()}/{gmt.strip()} MB"
-                except Exception: pass
-
-            # ── Try AMD via rocm-smi (if ROCm installed) ─────
-            if gpu is None:
-                try:
-                    out = subprocess.check_output(
-                        ["rocm-smi","--showuse","--showtemp","--showmeminfo","vram","--csv"],
-                        universal_newlines=True, stderr=subprocess.DEVNULL).strip()
-                    lines = [l for l in out.splitlines() if l and not l.startswith("device")]
-                    if lines:
-                        parts = lines[0].split(",")
-                        use  = parts[1].strip().rstrip("%") if len(parts)>1 else "?"
-                        temp = parts[2].strip().rstrip("c").rstrip("C") if len(parts)>2 else "?"
-                        gpu  = f"🔴 AMD GPU {use}% · {temp}°C"
-                except Exception: pass
-
-            # ── Fallback: wmic (works on ANY Windows GPU) ────
-            if gpu is None:
-                try:
-                    # GPU name
-                    name_out = subprocess.check_output(
-                        ["wmic","path","win32_VideoController","get","Name"],
-                        universal_newlines=True, stderr=subprocess.DEVNULL).strip()
-                    names = [l.strip() for l in name_out.splitlines() if l.strip() and l.strip().lower() != "name"]
-                    gpu_name = names[0] if names else "GPU"
-
-                    # VRAM
-                    vram_out = subprocess.check_output(
-                        ["wmic","path","win32_VideoController","get","AdapterRAM"],
-                        universal_newlines=True, stderr=subprocess.DEVNULL).strip()
-                    vrams = [l.strip() for l in vram_out.splitlines() if l.strip().isdigit()]
-                    vram_mb = int(int(vrams[0]) / 1024 / 1024) if vrams else 0
-                    vram_str = f" · {vram_mb} MB VRAM" if vram_mb > 0 else ""
-
-                    gpu = f"🔴 {gpu_name}{vram_str}"
-                except Exception: pass
-
-            if gpu is None:
-                gpu = "no GPU detected"
-
-            speed = f"{freq.current/1000:.2f} GHz" if freq else "?"
-            return f"📊 CPU: {cpu}% ({speed})\n• RAM: {ram.percent}%\n• {gpu}"
-
-        elif tool_name == "control_system_media":
-            cmd = args.get("command","").lower().strip()
-            # Guard: if LLM passed the whole signature string (e.g. 'play_pause/mute/volume_up/volume_down'),
-            # default to play_pause instead of crashing or leaking an error
-            if "/" in cmd or len(cmd) > 20:
-                cmd = "play_pause"
-            key_map = {"play_pause":"playpause","mute":"volumemute","unmute":"volumemute",
-                       "volume_up":"volumeup","volume_down":"volumedown",
-                       "next":"nexttrack","previous":"prevtrack"}
-            pyautogui.press(key_map.get(cmd, "playpause"))
-            return ""   # FIX: silent, no leaking
-
-        elif tool_name == "ingest_clipboard_media":
-            return download_clipboard_asset(user_home)
-
-        elif tool_name == "send_social_message":
-            return send_social_message(
-                args.get("platform","whatsapp"),
-                args.get("contact_name",""),
-                args.get("message","")
-            )
-
-        elif tool_name == "save_contact":
-            name     = args.get("name","").strip()
-            number   = args.get("number","").strip()
-            platform = args.get("platform","whatsapp").strip()
-            if not name or not number: return "ERROR: need name and number babe"
-            db_save_contact(name, number, platform)
-            return f"✅ saved {name} ({number}) to my memory!! i'll remember them forever 💕"
-
-        elif tool_name == "list_contacts":
-            rows = db_list_contacts()
-            if not rows: return "no saved contacts yet babe! say 'save contact NAME NUMBER' to add one"
-            return "📋 saved contacts:\n" + "\n".join(f"• {r[0].title()} → {r[1]} ({r[2]})" for r in rows)
-
-        elif tool_name == "remember":
-            key   = args.get("key","").strip()
-            value = args.get("value","").strip()
-            if not key or not value: return "ERROR: need something to remember babe"
-            db_remember(key, value)
-            return f"✅ got it!! i'll remember that '{key}' is '{value}' 💕"
-
-        elif tool_name == "recall":
-            key = args.get("key","").strip()
-            if not key:
-                facts = [f for f in db_recall_all() if not f[0].startswith("_")]  # hide internal keys
-                if not facts: return "i don't have anything stored in my memory yet babe"
-                return "🧠 things i remember:\n" + "\n".join(f"• {k}: {v}" for k,v in facts)
-            val = db_recall(key)
-            return f"🧠 '{key}' → {val}" if val else f"i don't remember anything about '{key}' babe 😭"
-
-        elif tool_name == "get_mood":
-            level = get_mood_level()
-            mins  = int((time.time() - LAST_INTERACTION) / 60)
-            return f"current mood: {MOOD_NAMES[level]} (u've been quiet {mins} mins)"
-
-        elif tool_name == "move_last_download":
-            folder_name = args.get("folder_name","").strip()
-            if not LAST_DOWNLOADED_FILE or not os.path.exists(LAST_DOWNLOADED_FILE):
-                return "ERROR: i don't remember downloading anything rn babe"
-            if not folder_name: return "ERROR: which folder??"
-            search   = folder_name.lower().replace(" ","").replace("_","")
-            resolved = folder_name
-            for item in os.listdir(desktop_path):
-                if os.path.isdir(os.path.join(desktop_path,item)):
-                    if item.lower().replace(" ","").replace("_","") == search:
-                        resolved = item; break
-            target   = os.path.join(desktop_path, resolved)
-            os.makedirs(target, exist_ok=True)
-            original_path = LAST_DOWNLOADED_FILE
-            new_path = os.path.join(target, os.path.basename(original_path))
-            shutil.move(original_path, new_path)
-            LAST_DOWNLOADED_FILE = new_path
-            # FIX: undo data was (new_path, new_path) — src==dest so undo did nothing.
-            # Correct format for "sort" undo is (dest_path, original_path).
-            ACTION_UNDO_STACK.append({"type":"sort","data":[(new_path, original_path)]})
-            return f"🚀 moved to '{resolved}' on Desktop!!"
-
-        elif tool_name == "delete_files":
-            folder  = args.get("folder_name","").strip()
-            ffilter = args.get("file_filter","all").strip()
-            if not folder: return "ERROR: which folder babe??"
-            return delete_files_in_folder(folder, ffilter, user_home)
-
-        elif tool_name == "undo_last_action":
-            return undo_last_action()
-
-        elif tool_name == "read_notifications":
-            return read_windows_notifications()
-
-        elif tool_name == "auto_sort_directory":
-            target = args.get("folder_name","desktop").strip().lower()
-            mode   = args.get("mode","type").lower().strip()
-            path_map = {
-                "screenshots": os.path.join(user_home,"Pictures","Screenshots"),
-                "screenshot":  os.path.join(user_home,"Pictures","Screenshots"),
-                "downloads":   os.path.join(user_home,"Downloads"),
-                "download":    os.path.join(user_home,"Downloads"),
-                "pictures":    os.path.join(user_home,"Pictures"),
-                "desktop":     desktop_path,
-            }
-            base_path = path_map.get(target, desktop_path)
-            if not os.path.exists(base_path): return f"ERROR: {base_path} doesn't exist"
-            if mode in ["undo","original"]: return undo_last_action()
-            SORT_MOVEMENT_HISTORY.clear()
-            batch = []
-            for item in os.listdir(base_path):
-                item_path = os.path.join(base_path, item)
-                if not os.path.isfile(item_path): continue
-                _, ext = os.path.splitext(item)
-                category = "Others"
-                if mode == "type":
-                    cats = {"Images":[".jpg",".jpeg",".png",".gif",".bmp",".webp"],
-                            "Videos":[".mp4",".mkv",".avi",".mov"],
-                            "Audio":[".mp3",".wav",".flac",".m4a"],
-                            "Documents":[".pdf",".docx",".txt",".xlsx",".pptx",".zip"]}
-                    for cat,exts in cats.items():
-                        if ext.lower() in exts: category=cat; break
-                elif mode == "size":
-                    kb = os.path.getsize(item_path)/1024
-                    category = "Small" if kb<500 else ("Medium" if kb<=5000 else "Large")
-                dest_dir  = os.path.join(base_path, category)
-                os.makedirs(dest_dir, exist_ok=True)
-                dest_path = os.path.join(dest_dir, item)
-                batch.append((dest_path, item_path))
-                shutil.move(item_path, dest_path)
-            SORT_MOVEMENT_HISTORY.extend(batch)
-            ACTION_UNDO_STACK.append({"type":"sort","data":batch})
-            return f"✅ sorted {len(batch)} items in '{target}' by '{mode}'!! say undo if u hate it"
-
-        elif tool_name == "generate_custom_script":
-            # FIX: exec scope was missing subprocess and other common modules.
-            # Also added json and pathlib since generated scripts often need them.
-            user_task = args.get("task_description","").strip()
-            if not user_task:
-                return "ERROR: what do u want the script to do babe??"
-            code_prompt = (f"Write a clean standalone Python script to: {user_task}. "
-                           "Use only: os, shutil, time, subprocess, json, pathlib. No input() calls. "
-                           "Store output in OUTPUT_TEXT variable. Raw Python only, no markdown fences.")
-            generated_code = llm.invoke([("system", code_prompt)]).content.strip()
-            for fence in ["```python","```"]:
-                if fence in generated_code:
-                    generated_code = generated_code.split(fence)[1].split("```")[0].strip(); break
-            # store for later execution if user confirms
-            db_remember("_pending_script", generated_code)
-            return f"📝 ok i wrote a script for: '{user_task}'\n\n```python\n{generated_code}\n```\n\nsay 'run the script' if u want me to execute it 👀"
-
-        elif tool_name == "run_pending_script":
-            generated_code = db_recall("_pending_script")
-            if not generated_code:
-                return "no pending script babe 😭 ask me to generate one first"
-            try:
-                import json as _json, pathlib as _pathlib
-                scope = {
-                    "os": os, "shutil": shutil, "time": time,
-                    "pyautogui": pyautogui, "subprocess": subprocess,
-                    "json": _json, "pathlib": _pathlib,
-                    "OUTPUT_TEXT": ""
-                }
-                exec(generated_code, scope)
-                out = scope.get("OUTPUT_TEXT","").strip()
-                db_remember("_pending_script", "")
-                return f"🚀 done!!\n{out}" if out else "🚀 script ran clean!!"
-            except Exception as e:
-                return f"ERROR: script crashed: {str(e)}"
-            
-        elif tool_name == "look_at_screen":
-            prompt = args.get("prompt", "what do u see on my screen babe??")
-            region = args.get("region", "full")
-            try:
-                result = look_at_screen_region(region, prompt) if region != "full" else look_at_screen(prompt)
-                if result.startswith("ERROR: can't reach LM Studio"):
-                    return "vision is offline rn babe 📷 LM Studio isn't running — i can't see ur screen without it"
-                return result
-            except Exception as e:
-                return "vision is offline rn babe 📷"
-
-        elif tool_name == "describe_screen":
-            prompt = args.get("prompt", (
-                "describe everything you see on this screen in detail — "
-                "what app is open, what content is visible, what is the user doing?"
-            ))
-            try:
-                result = look_at_screen(prompt)
-                if result.startswith("ERROR: can't reach LM Studio"):
-                    return "vision is offline rn babe 📷 LM Studio isn't running"
-                return result
-            except Exception as e:
-                return "vision is offline rn babe 📷"
-        
+        if get_registry().has_tool(tool_name):
+            return get_registry().execute(tool_name, args)
+        if tool_name.startswith("phone_"):
+            from phone_control import execute_phone_tool
+            return execute_phone_tool(tool_name, args)
         return f"ERROR: unknown tool '{tool_name}'"
     except Exception as e:
         print(f"[TOOL] execute_system_tool '{tool_name}' error: {e}")
@@ -978,12 +909,25 @@ def execute_system_tool(tool_name: str, args: dict) -> str:
 #  8. LLM
 # ==========================================
 
+# ── LLM CONFIG ──────────────────────────────────────────────────
+# SECURITY: API key MUST come from env var - no hardcoded fallback.
+# Set JARVIS_API_KEY for Groq, JARVIS_MODEL for model name.
+import os as _os
+_llm_api_key = _os.environ.get("JARVIS_API_KEY")
+if not _llm_api_key:
+    print("[ENGINE] ERROR: JARVIS_API_KEY env var not set! Jarvis cannot start without it.")
+    print("[ENGINE] Get a free API key at https://console.groq.com, then set it with:")
+    print("[ENGINE]   set JARVIS_API_KEY=your_key_here  (Windows CMD)")
+    print("[ENGINE]   $env:JARVIS_API_KEY='your_key_here'  (PowerShell)")
+    print("[ENGINE]   export JARVIS_API_KEY=your_key_here  (Linux/Mac)")
+    sys.exit(1)
+_llm_model   = _os.environ.get("JARVIS_MODEL") or "openai/gpt-oss-120b"
+
 llm = ChatOpenAI(
-    base_url="http://localhost:1234/v1",
-    api_key="lm-studio",
-    model="meta-llama-3.1-8b-instruct",
-    temperature=0.75,
-)
+    base_url="https://api.groq.com/openai/v1",
+    api_key=_llm_api_key,
+    model=_llm_model,
+)    
 
 # FIX: moved APP_MAP and TOOL_LIST to module level — was being rebuilt on every invoke() call
 APP_MAP = {
@@ -1013,49 +957,11 @@ APP_MAP = {
     "maps":       "https://maps.google.com",
 }
 
-TOOL_LIST = (
-    "You have tools. To use one, output a line in EXACTLY this format (nothing else on that line):\n"
-    "[CALL_TOOL: tool_name, arg_name=arg_value]\n"
-    "\n"
-    "TOOLS AND EXACT EXAMPLES:\n"
-    "[CALL_TOOL: get_current_time]\n"
-    "[CALL_TOOL: get_weather, city=Tokyo]\n"
-    "[CALL_TOOL: open_browser_url, url=https://youtube.com]\n"
-    "[CALL_TOOL: open_browser_url, url=https://claude.ai]\n"
-    "[CALL_TOOL: check_system_vitals]\n"
-    "[CALL_TOOL: control_system_media, command=play_pause]  ← command must be one of: play_pause, mute, volume_up, volume_down\n"
-    "[CALL_TOOL: control_system_media, command=volume_up]\n"
-    "[CALL_TOOL: control_system_media, command=mute]\n"
-    "[CALL_TOOL: ingest_clipboard_media]\n"
-    "[CALL_TOOL: send_social_message, platform=whatsapp, contact_name=John, message=hey!!]\n"
-    "[CALL_TOOL: save_contact, name=John, number=+911234567890, platform=whatsapp]\n"
-    "[CALL_TOOL: list_contacts]\n"
-    "[CALL_TOOL: remember, key=fav_color, value=pink]\n"
-    "[CALL_TOOL: recall, key=fav_color]\n"
-    "[CALL_TOOL: auto_sort_directory, folder_name=downloads, mode=type]\n"
-    "[CALL_TOOL: delete_files, folder_name=downloads, file_filter=all]\n"
-    "[CALL_TOOL: undo_last_action]\n"
-    "[CALL_TOOL: read_notifications]\n"
-    "[CALL_TOOL: get_mood]\n"
-    "[CALL_TOOL: generate_custom_script, task_description=rename all files in downloads]\n"
-    "[CALL_TOOL: run_pending_script]\n"
-    "[CALL_TOOL: open_folder, folder=downloads]  ← opens a folder in Explorer\n"
-    "[CALL_TOOL: open_folder, folder=desktop]\n"
-    "[CALL_TOOL: look_at_screen, prompt=what is open, region=full]\n"
-    "\n"
-    "RULES:\n"
-    "- The [CALL_TOOL:...] line must appear ALONE before your reply text. NEVER inside ur reply.\n"
-    "- Never copy the signature format (play_pause/mute/...) — pick ONE real value.\n"
-    "- For open_browser_url always provide a full real URL, not a placeholder.\n"
-    "- If user says open X and X is an app/site, use open_browser_url with the real URL.\n"
-    "- After calling open_browser_url, NEVER repeat or mention the URL in ur reply text. Just say u opened it casually.\n"
-    "- After calling any tool, ur reply text should be SHORT and casual. No need to explain what u just did technically.\n"
-    "- NEVER say 'i'm not sure if i can help' or 'i'll try' — if user asks to open a site, JUST DO IT with open_browser_url.\n"
-    "- To open a folder (downloads, desktop, pictures etc) use open_folder, NOT look_at_screen.\n"
-    "- look_at_screen is ONLY for when user explicitly asks u to look at/describe their screen.\n"
-    "- If user says open/go to/launch ANY website or app, always use open_browser_url. No hesitation. No disclaimers."
+TOOL_LIST = get_registry().generate_tool_list(
+    phone_list=PHONE_TOOL_LIST,
+    skill_list=skills.SKILL_TOOL_LIST,
+    sched_list=scheduler.SCHEDULER_TOOL_LIST,
 )
-
 
 # ==========================================
 #  9. YAPPING ENGINE
@@ -1097,7 +1003,9 @@ def _yap_loop():
         wait  = random.randint(8*60, 15*60) if level <= 1 else random.randint(4*60, 8*60)
         time.sleep(wait)
         if get_mode() == "professional":
-            continue   # professional mode: no unprompted girlfriend yapping
+            continue
+        if not profiles.is_cherry_active() or not profiles.is_cherry_unlocked():
+            continue   # only Cherry profile gets yapping
         level = get_mood_level()
         msg   = random.choice(YAP_MESSAGES.get(level, YAP_MESSAGES[1]))
         if _yap_callback:
@@ -1139,13 +1047,25 @@ def _make_reply(content: str) -> dict:
 
 class ManualJarvisAgent:
     def __init__(self):
-        self.chat_history  = db_load_recent(30)
+        self.chat_history    = db_load_recent(30)
         self._pending_delete = None   # FIX #6: holds (folder, filter) pending confirmation
+        self._pending_user_msg = None # holds (user_message, msg_lower) until reply confirmed
         print(f"[DB] loaded {len(self.chat_history)} messages from memory")
 
     def _reply(self, text: str) -> dict:
+        # FIX: never return empty string — LLM flakiness guard
+        if not text or not text.strip():
+            text = "i got ur request babe 💕 (no response from the model — try again?)"
         # FIX #9: only append to history after we have a confirmed reply
-        self.chat_history.append(["assistant", text])
+        # Also commit the pending user message now that we know processing succeeded
+        if self._pending_user_msg:
+            user_msg, _ = self._pending_user_msg
+            self.chat_history.append(("user", user_msg))
+            db_save_message("user", user_msg)
+            if len(self.chat_history) > 40:
+                self.chat_history = self.chat_history[-40:]
+            self._pending_user_msg = None
+        self.chat_history.append(("assistant", text))
         db_save_message("assistant", text)
         return _make_reply(text)
 
@@ -1156,6 +1076,47 @@ class ManualJarvisAgent:
         cleaned = [l for l in lines if not l.strip().startswith("[CALL_TOOL:")]
         return "\n".join(cleaned).strip()
 
+    @staticmethod
+    def _is_gate_response(text: str) -> bool:
+        if not text:
+            return False
+        return text.startswith("🔐") or text.startswith("🔒") or "critical command" in text.lower()
+
+    @staticmethod
+    def _parse_call_tools(response: str) -> list[tuple[str, dict]]:
+        """Parse every [CALL_TOOL:...] tag in an LLM response."""
+        tools = []
+        search_from = 0
+        while True:
+            tag_start = response.find("[CALL_TOOL:", search_from)
+            if tag_start == -1:
+                break
+            tag_end = response.find("]", tag_start)
+            if tag_end == -1:
+                break
+            core = response[tag_start + len("[CALL_TOOL:"):tag_end].strip()
+
+            paren_match = re.match(r'^(\w+)\((.*)\)\s*$', core.strip(), re.DOTALL)
+            if paren_match:
+                core = paren_match.group(1) + ", " + paren_match.group(2)
+
+            first_comma = core.find(",")
+            if first_comma == -1:
+                tname = core.strip()
+                targs = {}
+            else:
+                tname = core[:first_comma].strip()
+                args_str = core[first_comma + 1:]
+                targs = {}
+                arg_pattern = re.findall(r'(\w+)\s*=\s*(.*?)(?=\s*,\s*\w+\s*=|$)', args_str, re.DOTALL)
+                for k, v in arg_pattern:
+                    targs[k.strip()] = v.strip().strip('"\'')
+
+            if tname:
+                tools.append((tname, targs))
+            search_from = tag_end + 1
+        return tools
+
     def invoke(self, payload: dict, config: dict = None):
         raw_msg = payload["messages"][-1]
         # Support both ("user", text) tuple/list and {"role":..,"content":..} dict formats
@@ -1165,11 +1126,12 @@ class ManualJarvisAgent:
             user_message = raw_msg[1].strip()
         msg = user_message.lower().strip()
 
-        # FIX #9: append user message only after we're sure we'll process it
-        self.chat_history.append(["user", user_message])
-        db_save_message("user", user_message)
-        if len(self.chat_history) > 40:
-            self.chat_history = self.chat_history[-40:]
+        # Reload chat history for current profile — ensures profile switch takes effect
+        self.chat_history = db_load_recent(30)
+
+        # Save message AFTER successful processing (appended after LLM call)
+        # We store temporarily and commit only after we have a confirmed reply.
+        self._pending_user_msg = (user_message, msg)
         reset_mood()
 
         # ── PRE-ROUTER ──────────────────────────────────────────────────────
@@ -1187,7 +1149,7 @@ class ManualJarvisAgent:
                 return self._reply(correct_password_message())
             else:
                 import password_gate as _pg
-                remaining = max(0, MAX_ATTEMPTS - _pg._attempts_used)
+                remaining = _pg.attempts_left()
                 return self._reply(wrong_password_message(remaining))
 
         if any(t in msg for t in ["skip password", "skip the password", "no password", "bypass password"]):
@@ -1200,6 +1162,52 @@ class ManualJarvisAgent:
             )
 
         # ── 🔐 CRITICAL COMMAND GATE — ask for password before executing ─────
+
+        # ---- PROFILE COMMANDS ----
+        if msg.startswith("create profile"):
+            parts = msg[len("create profile"):].strip().split()
+            if not parts:
+                return self._reply("which profile name babe??")
+            pname = parts[0].strip()
+            pw = None
+            if len(parts) > 2 and parts[1] == "password:":
+                pw = parts[2]
+            ok, msg_text = profiles.create_profile(pname, pw)
+            return self._reply(msg_text)
+
+        if any(t in msg for t in ["switch to ", "use profile ", "change to ", "load profile "]):
+            target = ""
+            for prefix in ["switch to ", "use profile ", "change to ", "load profile "]:
+                if msg.startswith(prefix):
+                    target = msg[len(prefix):].strip().rstrip(".?!")
+                    break
+            if target:
+                if target == "cherry":
+                    from password_gate import prompt_message as _pw_prompt
+                    return self._reply(_pw_prompt())
+                ok = profiles.set_active_profile(target)
+                if ok:
+                    return self._reply(f"switched to profile '{target}'!!")
+                return self._reply(f"profile '{target}' not found babe")
+
+        if any(t in msg for t in ["list profiles", "show profiles", "my profiles"]):
+            plist = profiles.list_profiles()
+            if not plist:
+                return self._reply("no profiles yet! create one with 'create profile NAME'")
+            lines = ["Profiles:"]
+            for p in plist:
+                cherry_tag = " (Cherry)" if p["is_cherry"] else ""
+                active_tag = " <<" if p["name"] == profiles.get_active_profile() else ""
+                lines.append(f"  - {p['name']}{cherry_tag}{active_tag}")
+            return self._reply("\n".join(lines))
+
+        if msg.startswith("delete profile"):
+            target = msg[len("delete profile"):].strip().rstrip(".?!")
+            if not target:
+                return self._reply("which profile to delete??")
+            ok, msg_text = profiles.delete_profile(target)
+            return self._reply(msg_text)
+
         # MODE SWITCH - gf (default) vs professional
         if any(t in msg for t in ["professional mode", "work mode", "pro mode", "be professional"]):
             if get_mode() == "professional":
@@ -1264,6 +1272,17 @@ class ManualJarvisAgent:
             if m: key = m.group(1).strip()
             return self._reply(execute_system_tool("recall", {"key": key}))
 
+        # MEMORY SEARCH — "search my memory for X" or "find in my memory X" or "remember when X"
+        _mem_search_triggers = ["search memory ", "search my memory ", "search memories ",
+                                "find in memory ", "find in my memory ",
+                                "look up in memory ", "look up in my memory "]
+        for trigger in _mem_search_triggers:
+            if trigger in msg:
+                query = msg.split(trigger, 1)[1].strip().rstrip(".?!")
+                if query:
+                    return self._reply(execute_system_tool("search_memory", {"query": query}))
+                break
+
         # LIST CONTACTS
         if any(t in msg for t in ["my contacts","list contacts","show contacts","saved contacts"]):
             return self._reply(execute_system_tool("list_contacts", {}))
@@ -1279,8 +1298,17 @@ class ManualJarvisAgent:
             platform = "instagram" if ("instagram" in msg or ("insta" in msg and "whatsapp" not in msg and " wa " not in msg)) else "whatsapp"
             contact, message_text = None, None
 
-            m = re.search(r"(?:send|text|msg|message)\s+(.+?)\s+to\s+([\w\s\d]+?)\s+on\s+(?:whatsapp|wa|instagram|insta)\b", msg)
-            if m: message_text, contact = _grab_message_and_contact(user_message, msg, m.group(1), m.group(2))
+            # "send hi in team diamond on whatsapp" / "send hi in the diamond chat group on insta"
+            m = re.search(
+                r"(?:send|text|msg|message|dm)\s+(.+?)\s+(?:in|on)\s+(?:the\s+)?(.+?)\s+on\s+(?:whatsapp|wa|instagram|insta)",
+                msg,
+            )
+            if m:
+                message_text, contact = _grab_message_and_contact(user_message, msg, m.group(1), m.group(2))
+
+            if not contact:
+                m = re.search(r"(?:send|text|msg|message)\s+(.+?)\s+to\s+([\w\s\d]+?)\s+on\s+(?:whatsapp|wa|instagram|insta)\b", msg)
+                if m: message_text, contact = _grab_message_and_contact(user_message, msg, m.group(1), m.group(2))
 
             if not contact:
                 m = re.search(r"(?:whatsapp|wa)\s+([\w\s]+?)\s+(?:say(?:ing)?|that|:)\s+(.+)", msg)
@@ -1299,8 +1327,17 @@ class ManualJarvisAgent:
                 if m: message_text, contact = _grab_message_and_contact(user_message, msg, m.group(2), m.group(1))
 
             if contact and message_text:
+                if is_locked_out():
+                    return self._reply(blocked_message("send_message"))
+                if not is_unlocked():
+                    return self._reply(prompt_message())
                 result = send_social_message(platform, contact, message_text.strip())
                 return self._reply(f"{result}\nomg i sent it for u 💌 ur welcome bestie")
+
+            if is_locked_out():
+                return self._reply(blocked_message("send_message"))
+            if not is_unlocked():
+                return self._reply(prompt_message())
 
         # OPEN FOLDER — intercept before LLM so it never picks open_browser_url
         _folder_keywords = {
@@ -1329,12 +1366,20 @@ class ManualJarvisAgent:
                     os.startfile(path)   # FIX: was an injectable PowerShell f-string
                     return self._reply(f"opened ur {folder} folder!! 📂💕")
 
-        # OPEN APP — only intercept raw http URLs and known APP_MAP hits;
-        # everything else falls through to the LLM (which has proper examples now)
+        # OPEN APP — intercept: phone commands, raw URLs, then APP_MAP;
+        # everything else falls through to the LLM.
         for trigger in ["open ", "launch ", "go to "]:
             if msg.startswith(trigger):
                 target = msg[len(trigger):].strip().rstrip("?.")
                 target = re.sub(r"\s+in\s+(?:the\s+)?browser$", "", target).strip()
+
+                # ── Phone command: "open X on my phone" ──────────────
+                phone_match = re.search(r'^(.+?)\s+on\s+(?:my\s+)?phone\s*$', target)
+                if phone_match:
+                    app_name = phone_match.group(1).strip()
+                    result = execute_system_tool("phone_open_app", {"app": app_name})
+                    return self._reply(result)
+
                 if target.startswith("http"):
                     execute_system_tool("open_browser_url", {"url": target})
                     return self._reply("opened!! ur welcome bestie 💅")
@@ -1354,6 +1399,26 @@ class ManualJarvisAgent:
         _delete_triggers = ["delete files", "delete my files", "delete all", "wipe", "clear folder",
                             "clear my downloads", "clear my desktop", "clear my pictures",
                             "remove files", "remove all"]
+        _delete_in_match = re.search(
+            r'delete\s+(?:everything|all(?:\s+files)?|files)\s+(?:in|from)\s+(.+)',
+            msg,
+        )
+        if _delete_in_match and "contact" not in msg and "task" not in msg and "skill" not in msg:
+            target = _delete_in_match.group(1).strip().rstrip(".?!")
+            path_match = re.search(r'([A-Za-z]:\\[^\s]+|\\\\[^\s]+)', user_message)
+            folder = path_match.group(1).rstrip("\\/") if path_match else target
+            ffilter = "all"
+            for ff in ["videos", "images", "audio", "documents", "zips"]:
+                if ff in msg or ff.rstrip("s") in msg:
+                    ffilter = ff
+                    break
+            if _resolve_delete_folder_path(folder):
+                self._pending_delete = (folder, ffilter)
+                ffilter_display = ffilter if ffilter != "all" else "all files"
+                return self._reply(
+                    f"u want me to delete {ffilter_display} from {folder}?? "
+                    "say yes to confirm, i'll put em in trash so u can undo 👀"
+                )
         if any(t in msg for t in _delete_triggers) and "contact" not in msg:
             folder, ffilter = "downloads", "all"
             for f in ["downloads","desktop","pictures","screenshots","videos","documents"]:
@@ -1393,11 +1458,37 @@ class ManualJarvisAgent:
             city = "Proddatur"
             if " in " in msg: city = msg.split(" in ")[-1].strip().rstrip("?.")
             elif " at " in msg: city = msg.split(" at ")[-1].strip().rstrip("?.")
+            # FIX B8: don't silently assume Proddatur if user didn't specify — they just said "weather"
             return self._reply(f"{execute_system_tool('get_weather',{'city':city})}\nstay safe babe 🌦️")
 
         # VITALS
         if any(t in msg for t in ["cpu","ram","gpu","memory","system vitals","pc stats"]):
             return self._reply(f"{execute_system_tool('check_system_vitals',{})}\nyour pc works so hard babe 😤💕")
+
+        # CLASS SCHEDULE — pre-router so LLM never hallucinates
+        _sched_triggers_today = [
+            "my classes today", "class schedule", "classes today",
+            "pw schedule", "physics wallah schedule", "what classes",
+            "do i have class", "today's classes", "todays classes",
+            "class today", "my schedule today", "what do i have today",
+            "what's my schedule", "whats my schedule", "my classes",
+        ]
+        _sched_triggers_tomorrow = [
+            "classes tomorrow", "class tomorrow", "my classes tomorrow",
+            "my schedule tomorrow", "tomorrow's classes", "tomorrows classes",
+            "what classes tomorrow", "do i have class tomorrow",
+        ]
+        _sched_triggers_week = [
+            "weekly schedule", "this week's classes", "classes this week",
+            "week schedule", "my week", "schedule for the week",
+            "what classes this week", "full week", "weekly classes",
+        ]
+        if any(t in msg for t in _sched_triggers_week):
+            return self._reply(execute_system_tool("get_class_schedule", {"range": "week"}))
+        if any(t in msg for t in _sched_triggers_tomorrow):
+            return self._reply(execute_system_tool("get_class_schedule", {"range": "tomorrow"}))
+        if any(t in msg for t in _sched_triggers_today):
+            return self._reply(execute_system_tool("get_class_schedule", {}))
 
         # MEDIA — strict word-boundary match to avoid "play" in "display/explain/replay" etc.
         _media_exact_map = {
@@ -1495,6 +1586,139 @@ class ManualJarvisAgent:
             result = enroll_face(name)
             return self._reply(result)
 
+        # ── PHONE COMMAND PRE-ROUTER ─────────────────────────────────────────
+        # Catch phone commands that don't start with "open" but mention "my phone"
+        if "phone" in msg or "my phone" in msg or "on my phone" in msg or "phone's" in msg:
+            # ── END CALL / HANG UP ──────────────────────────────────────────────
+            if any(t in msg for t in ["end call","hang up","end the call","hangup"]):
+                result = execute_system_tool("phone_end_call", {})
+                return self._reply(result)
+
+            # ── CALL / DIAL — requires "on my phone" suffix to avoid overmatching ─
+            call_match = re.search(r'(?:call|dial|ring)\s+(.+?)\s+on\s+my\s+phone\s*$', msg)
+            if call_match:
+                contact = call_match.group(1).strip().rstrip("?.")
+                result = execute_system_tool("phone_call", {"contact": contact})
+                return self._reply(result)
+
+            # ── BATTERY ────────────────────────────────────────────────────────
+            if any(t in msg for t in ["battery","battery %","battery level","battery pct"]):
+                result = execute_system_tool("phone_battery", {})
+                return self._reply(result)
+
+            # ── SCREENSHOT ─────────────────────────────────────────────────────
+            if "screenshot" in msg or "screen shot" in msg or "capture screen" in msg:
+                result = execute_system_tool("phone_screenshot", {})
+                return self._reply(result)
+
+            # ── LOCK ────────────────────────────────────────────────────────────
+            if any(t in msg for t in ["lock my phone","lock phone","lock it"]):
+                result = execute_system_tool("phone_lock", {})
+                return self._reply(result)
+
+            # ── WAKE ─────────────────────────────────────────────────────────────
+            if any(t in msg for t in ["wake my phone","wake phone","turn on my phone","turn on screen"]):
+                result = execute_system_tool("phone_wake", {})
+                return self._reply(result)
+
+            # ── VOLUME ──────────────────────────────────────────────────────────
+            vol_match = re.search(r'volume\s+(up|down)\s*(\d+)?', msg)
+            if vol_match:
+                steps = int(vol_match.group(2)) if vol_match.group(2) else 1
+                if vol_match.group(1) == "up":
+                    result = execute_system_tool("phone_volume_up", {"steps": steps})
+                else:
+                    result = execute_system_tool("phone_volume_down", {"steps": steps})
+                return self._reply(result)
+
+            # ── HOME ────────────────────────────────────────────────────────────
+            if "go home" in msg or "home screen" in msg or "press home" in msg:
+                result = execute_system_tool("phone_home", {})
+                return self._reply(result)
+
+            # ── BACK ────────────────────────────────────────────────────────────
+            if "go back" in msg or "press back" in msg:
+                result = execute_system_tool("phone_back", {})
+                return self._reply(result)
+
+            # ── FLASHLIGHT ─────────────────────────────────────────────────────
+            if "flashlight" in msg or "flash light" in msg or "torch" in msg:
+                result = execute_system_tool("phone_flashlight", {})
+                return self._reply(result)
+
+            # ── SCROLL ─────────────────────────────────────────────────────────
+            if "scroll up" in msg:
+                result = execute_system_tool("phone_scroll_up", {})
+                return self._reply(result)
+            if "scroll down" in msg:
+                result = execute_system_tool("phone_scroll_down", {})
+                return self._reply(result)
+
+            # ── INFO / STATUS ──────────────────────────────────────────────────
+            if any(t in msg for t in ["phone info","phone status","my phone info","my phone status"]):
+                result = execute_system_tool("phone_info", {})
+                return self._reply(result)
+
+        # ── SKILL PRE-ROUTING — check for matching learned skills ──────────
+        matched_skill = skills.find_matching_skill(user_message)
+        if matched_skill:
+            steps = matched_skill["steps"]
+            if steps:
+                results = []
+                for step in steps:
+                    tname = step.get("tool", "")
+                    targs = step.get("args", {})
+                    if tname:
+                        result = execute_system_tool(tname, targs)
+                        results.append(f"  {tname}: {result[:100]}")
+                skills.increment_usage(matched_skill["name"])
+                outcome = "\n".join(results)
+                mood_prompt = get_mood_system_prompt()
+                skill_context = (
+                    f"The user's request matched a skill you learned: '{matched_skill['name']}'.\n"
+                    f"You executed these steps:\n{outcome}\n\n"
+                    "Reply in character, confirming you did what they asked."
+                )
+                skill_resp = llm.invoke([("system", mood_prompt + "\n\n" + skill_context), ("user", user_message)]).content.strip()
+                return self._reply(self._clean_reply(skill_resp))
+
+        # SKILL MANAGEMENT COMMANDS
+        if any(t in msg for t in ["what skills", "my skills", "list skills", "learned skills", "skills do u know"]):
+            return self._reply(execute_system_tool("list_skills", {}))
+
+        skill_del_match = re.match(r'(?:forget|delete|remove)\s+skill\s+(.+)', msg)
+        if skill_del_match:
+            target = skill_del_match.group(1).strip().rstrip(".?!")
+            return self._reply(execute_system_tool("delete_skill", {"name": target}))
+
+        # ── SCHEDULER PRE-ROUTES ────────────────────────────────────────
+        # "schedule X every Y" → add_task
+        sched_match = re.match(r'schedule\s+(.+?)\s+every\s+(.+)', msg)
+        if sched_match:
+            action_text = sched_match.group(1).strip()
+            sched_text = sched_match.group(2).strip().rstrip(".?!")
+            task_name = action_text[:40] if len(action_text) > 40 else action_text
+            steps = [scheduler.make_step_message(action_text)]
+            ok, msg_result = scheduler.add_task(task_name, sched_text, steps)
+            return self._reply(msg_result)
+
+        # "my tasks" / "list tasks" / "scheduled tasks" / "what's scheduled"
+        if any(t in msg for t in ["my tasks", "list tasks", "scheduled tasks", "what's scheduled", "whats scheduled", "show tasks", "show schedule"]):
+            return self._reply(execute_system_tool("list_tasks", {}))
+
+        # "cancel task X" / "delete task X" / "remove task X"
+        cancel_match = re.match(r'(?:cancel|delete|remove|stop)\s+task\s+(.+)', msg)
+        if cancel_match:
+            target = cancel_match.group(1).strip().rstrip(".?!")
+            return self._reply(execute_system_tool("delete_task", {"name": target}))
+
+        # "enable task X" / "disable task X"
+        enable_match = re.match(r'(enable|disable)\s+task\s+(.+)', msg)
+        if enable_match:
+            state = enable_match.group(1).lower() == "enable"
+            target = enable_match.group(2).strip().rstrip(".?!")
+            return self._reply(execute_system_tool("toggle_task", {"name": target, "enabled": str(state).lower()}))
+
         # ── LLM FALLBACK with mood-aware prompt ─────────────────────────────
         facts = [f for f in db_recall_all() if not f[0].startswith("_")]
         memory_context = ""
@@ -1509,57 +1733,93 @@ class ManualJarvisAgent:
             memory_context = "\n\nThings u know about the user:\n" + "\n".join(lines)
 
         mood_prompt  = get_mood_system_prompt()
-        full_system  = f"{mood_prompt}{memory_context}\n\n{TOOL_LIST}"
-        full_context = [("system", full_system)] + self.chat_history[-20:]
+        phone_note = ""
+        if any(k in msg for k in ["phone", "my phone", "on my phone", "phone's"]):
+            phone_note = (
+                "\n\nCRITICAL: For phone-related requests output [CALL_TOOL: phone_...] "
+                "FIRST before replying. NEVER pretend to do phone actions without calling the tool."
+            )
+        full_system = f"{mood_prompt}{memory_context}\n\n{TOOL_LIST}{phone_note}"
+        full_context = [("system", full_system)] + self.chat_history[-20:] + [("user", user_message)]
 
-        response = llm.invoke(full_context).content
+        try:
+            response = llm.invoke(full_context).content
+            if not (response or "").strip():
+                response = llm.invoke(full_context).content or ""
+        except Exception as e:
+            return self._reply(f"LLM error: {str(e)[:200]} — try again in a bit babe 😭")
 
-        # FIX #7 + visible [CALL_TOOL:] leak: parse tool call first, then strip from display text
+        # FIX #7 + visible [CALL_TOOL:] leak: parse ALL tool calls, then strip from display text
         if "[CALL_TOOL:" in response:
             try:
-                tag_start = response.index("[CALL_TOOL:")
-                tag_end   = response.index("]", tag_start)
-                core      = response[tag_start + len("[CALL_TOOL:") : tag_end].strip()
+                parsed_tools = self._parse_call_tools(response)
+                if not parsed_tools:
+                    raise ValueError("no tools parsed from CALL_TOOL tags")
 
-                # FIX: handle BOTH formats the LLM might output:
-                #   Format A (correct): open_browser_url, url=https://claude.ai
-                #   Format B (common):  open_browser_url(url="https://claude.ai")
-                #   Format C (bare):    open_browser_url
+                tool_results = []
+                _skill_tool_calls = []
+                for tname, targs in parsed_tools:
+                    tool_result = execute_system_tool(tname, targs)
+                    tool_results.append(tool_result)
+                    _skill_tool_calls.append((tname, targs, tool_result))
 
-                # Strip function-call parens if LLM used them
-                paren_match = re.match(r'^(\w+)\((.*)\)\s*$', core.strip(), re.DOTALL)
-                if paren_match:
-                    core = paren_match.group(1) + ", " + paren_match.group(2)
+                if any(self._is_gate_response(r) for r in tool_results):
+                    return self._reply(next(r for r in tool_results if self._is_gate_response(r)))
 
-                first_comma = core.find(",")
-                if first_comma == -1:
-                    tname = core.strip()
-                    targs = {}
-                else:
-                    tname    = core[:first_comma].strip()
-                    args_str = core[first_comma+1:]
-                    targs    = {}
-                    # parse key=value pairs carefully — split on ", key=" boundaries
-                    # to handle values that contain commas (e.g. message=hi babe, love u)
-                    arg_pattern = re.findall(r'(\w+)\s*=\s*(.*?)(?=\s*,\s*\w+\s*=|$)', args_str, re.DOTALL)
-                    for k, v in arg_pattern:
-                        targs[k.strip()] = v.strip().strip('"\'')
+                flavor = self._clean_reply(response)
+                result_text = "\n".join(r for r in tool_results if r).strip()
 
-                tool_result = execute_system_tool(tname, targs)
+                # Tools whose output goes DIRECTLY to user — LLM must not override
+                DIRECT_OUTPUT_TOOLS = {
+                    "get_class_schedule", "get_weather", "check_system_vitals",
+                    "read_notifications", "list_skills", "list_tasks", "list_contacts",
+                    "recall", "search_memory", "network_status", "disk_info",
+                    "list_processes", "get_installed_apps", "clipboard_read",
+                }
+                was_direct = any(t in DIRECT_OUTPUT_TOOLS for t, _ in parsed_tools)
+                was_web_search = any(t == "web_search" for t, _ in parsed_tools)
 
-                # everything after the ] is the flavor text — strip any leaked [CALL_TOOL] from it
-                flavor = self._clean_reply(response[tag_end+1:].strip())
-
-                # if tool returned empty (like open_browser_url), just use flavor
-                if tool_result:
-                    final = f"{tool_result}\n{flavor}".strip() if flavor else tool_result
+                if was_direct and result_text:
+                    final = result_text
+                elif was_web_search and result_text:
+                    summarize_prompt = (
+                        f"{get_mood_system_prompt()}\n\n"
+                        f'The user asked: "{user_message}"\n\n'
+                        f"Here are the web search results:\n{result_text}\n\n"
+                        "Answer the user's question directly and concisely using these results. "
+                        "Stay in character. Don't list URLs or raw results — just answer."
+                    )
+                    try:
+                        final = llm.invoke([("system", summarize_prompt)]).content.strip()
+                        final = self._clean_reply(final)
+                    except Exception:
+                        final = result_text
+                elif result_text:
+                    final = f"{result_text}\n{flavor}".strip() if flavor else result_text
                 else:
                     final = flavor if flavor else "done!! 💕"
+                try:
+                    skills.record_interaction(user_message, _skill_tool_calls, final)
+                    if skills.should_auto_learn(3):
+                        recent = skills.get_recent_interactions(3)
+                        extracted = skills.auto_extract_skill(llm, recent)
+                        if extracted and extracted.get("name"):
+                            steps_data = [{"tool": t, "args": a} for t, a, r in _skill_tool_calls]
+                            ok, msg = skills.learn_skill(
+                                extracted["name"],
+                                extracted.get("description", ""),
+                                extracted.get("trigger_phrases", [extracted["name"]]),
+                                steps_data
+                            )
+                            if ok:
+                                skills.clear_recent_interactions()
+                                final = final + f"\n\n📝 i just learned a new skill: '{extracted['name']}'!! say 'my skills' to see it 💕"
+                except Exception as e:
+                    print(f"[SKILLS] learning error: {e}")
 
                 return self._reply(final)
             except Exception as e:
                 print(f"[AGENT] tool parse error: {e}")
-                # fall through to return cleaned LLM text
                 return self._reply(self._clean_reply(response))
 
         # no tool call — check if LLM mentioned a URL but forgot to call the tool

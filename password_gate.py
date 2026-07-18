@@ -8,6 +8,7 @@
 
 import hashlib
 import threading
+import profiles
 
 # ── CONFIG ───────────────────────────────────────────────────
 # Change this to your password. Stored as SHA-256 hash so
@@ -30,7 +31,10 @@ _env_pw = _os.environ.get("JARVIS_PASSWORD")
 if _env_pw:
     _PASSWORD_HASH = _hash_password(_env_pw)
 else:
-    print("[GATE] WARNING: JARVIS_PASSWORD env var not set - using default password 'jarvis123'. CHANGE THIS!")
+    import sys as _sys
+    print("[GATE] ⚠️  SECURITY WARNING: JARVIS_PASSWORD env var not set!", file=_sys.stderr)
+    print("[GATE] ⚠️  Using default password 'jarvis123' — SET THE ENV VAR!", file=_sys.stderr)
+    print("[GATE] ⚠️  Windows: set JARVIS_PASSWORD=yourpass  (in terminal before running jarvis.py)", file=_sys.stderr)
     _PASSWORD_HASH = _hash_password("jarvis123")
 
 MAX_ATTEMPTS = 2
@@ -113,6 +117,7 @@ def attempt_unlock(password: str) -> bool:
 
         if guess_hash == _PASSWORD_HASH:
             _unlocked = True
+            profiles.set_cherry_unlocked(True)
             print("[GATE] ✅ password correct — critical commands unlocked")
             return True
         else:
@@ -126,15 +131,18 @@ def attempt_unlock(password: str) -> bool:
 
 def skip_unlock():
     """User chose to skip — lock out critical commands for session."""
-    global _locked_out
+    global _locked_out, _attempts_used
     with _lock:
         _locked_out = True
+        _attempts_used = MAX_ATTEMPTS
+        profiles.set_cherry_unlocked(False)
     print("[GATE] ⏭ password skipped — critical commands disabled for session")
 
 
 def reset_session():
     """Call this on jarvis restart to clear state."""
     global _unlocked, _locked_out, _attempts_used
+    profiles.reset_session()
     with _lock:
         _unlocked      = False
         _locked_out    = False
@@ -150,6 +158,9 @@ def change_password(old_password: str, new_password: str) -> tuple[bool, str]:
     """
     Change the password. Requires the old password to be correct.
     Returns (success: bool, message: str).
+
+    NOTE: Password change is SESSION-ONLY. It is NOT persisted to disk.
+    On restart, JARVIS_PASSWORD env var (or default) is used again.
     """
     global _PASSWORD_HASH, _unlocked, _locked_out, _attempts_used
     old_hash = _hash_password(old_password)
@@ -159,13 +170,11 @@ def change_password(old_password: str, new_password: str) -> tuple[bool, str]:
         if not new_password.strip():
             return False, "❌ new password can't be empty babe"
         _PASSWORD_HASH = _hash_password(new_password)
-        # FIX: reset session so user must re-authenticate with new password.
-        # Without this, the session stays permanently unlocked after a change.
         _unlocked      = False
         _locked_out    = False
         _attempts_used = 0
-        print(f"[GATE] 🔑 password changed successfully — session reset")
-        return True, "✅ password changed!! enter the new one to unlock critical commands again 💕"
+        print(f"[GATE] 🔑 password changed (session only — set JARVIS_PASSWORD env var to persist)")
+        return True, "✅ password changed for this session!! set JARVIS_PASSWORD env var to make it permanent 💕"
 
 
 # ── Jarvis-flavoured response strings ────────────────────────

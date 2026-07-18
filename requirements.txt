@@ -1,25 +1,2 @@
-# UI / server
-eel
-flask
-flask-cors
-
-# LLM
-langchain-openai
-
-# System control
-psutil
-pyautogui
-pyperclip
-pygetwindow
-keyboard
-websockets
-requests
-
-# Vision / webcam
-opencv-contrib-python
-numpy
-pillow
-mss
-
-# Media
-yt-dlp
+# UI / server# UI / servereel==0.2.6flask==3.1.0flask-cors==5.0.1# LLMlangchain-openai==0.3.2# System controlpsutil==6.1.1pyautogui==0.9.54pyperclip==1.9.0pygetwindow==0.0.9keyboard==0.13.5websockets==14.1requests==2.32.3
+duckduckgo_search==7.5.2# Vision / webcamopencv-contrib-python==4.10.0.84numpy==2.2.2pillow==11.1.0mss==10.0.0# Mediayt-dlp==2024.12.13

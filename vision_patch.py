@@ -139,7 +139,8 @@ def look_at_screen_region(region: str = "full", prompt: str = "what's on my scre
         }
         box = crop_map.get(region.lower(), crop_map["full"])
         img = img.crop(box)
-        b64 = _compress_screenshot(img, scale=1.0)
+        # FIX B19: region screenshots use higher scale than full (already cropped, so still smaller total pixels)
+        b64 = _compress_screenshot(img, scale=0.6)
         return _ask_vision(b64, prompt)
     except Exception as e:
         return f"ERROR: region screenshot failed: {str(e)}"

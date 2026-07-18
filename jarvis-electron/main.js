@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, ipcMain } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 
@@ -74,6 +74,23 @@ function createWindow() {
 app.whenReady().then(() => {
   startPythonBackend()
   createWindow()
+})
+
+ipcMain.on('window:minimize', () => {
+  mainWindow?.minimize()
+})
+
+ipcMain.on('window:maximize', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize()
+  } else {
+    mainWindow.maximize()
+  }
+})
+
+ipcMain.on('window:close', () => {
+  mainWindow?.close()
 })
 
 app.on('window-all-closed', () => {

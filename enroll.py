@@ -18,10 +18,22 @@ JARVIS_DIR    = os.path.dirname(os.path.abspath(__file__))
 FACE_DATA_DIR = os.path.join(JARVIS_DIR, "face_data")
 ENROLL_FILE   = os.path.join(FACE_DATA_DIR, "enrolled.json")
 MODEL_PATH    = os.path.join(FACE_DATA_DIR, "face_model.yml")
+FACE_DB_PATH  = os.path.join(FACE_DATA_DIR, "face_db.json")
+SAMPLES_DIR   = os.path.join(FACE_DATA_DIR, "samples")
 os.makedirs(FACE_DATA_DIR, exist_ok=True)
+os.makedirs(SAMPLES_DIR, exist_ok=True)
 
-N_SAMPLES_EACH = 80   # per phase — more = better
+N_SAMPLES_EACH = 40   # per pose — more = better
 CAM_INDEX      = 0
+
+# Pose guidance for multi-pose enrollment
+ENROLL_POSES = [
+    ("look straight at camera", 40),
+    ("slowly turn ur head LEFT", 30),
+    ("slowly turn ur head RIGHT", 30),
+    ("tilt chin UP a bit", 20),
+    ("tilt chin DOWN a bit", 20),
+]
 
 # Only frontal cascade during enroll — alt2 picks up too many false positives
 _cascade = cv2.CascadeClassifier(
@@ -51,13 +63,13 @@ def get_largest_face(gray):
     return max(faces, key=lambda f: f[2] * f[3])
 
 
-def collect_phase(cap, n: int, phase_name: str):
-    samples, labels = [], []
+def collect_pose(cap, n: int, pose_name: str):
+    """Collect aligned face samples for a specific head pose."""
+    samples = []
     collected = 0
-    skipped   = 0
-    print(f"\n[ENROLL] ── {phase_name} ──")
-    print(f"[ENROLL] Sit normally, look at camera. Collecting {n} samples...")
-    print(f"[ENROLL] Move ur head slightly side to side for variety.")
+    stall_counter = 0
+    print(f"\n[ENROLL] ── POSE: {pose_name} ({n} samples) ──")
+    print(f"[ENROLL] {pose_name} and hold still...")
 
     while collected < n:
         ret, frame = cap.read()
@@ -71,52 +83,70 @@ def collect_phase(cap, n: int, phase_name: str):
 
         face = get_largest_face(gray)
 
-        # draw all faces faintly so u can see what's being detected
+        # draw all faces faintly
         all_faces = _cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4, minSize=(40,40))
         for (fx, fy, fw, fh) in all_faces:
             cv2.rectangle(frame, (fx, fy), (fx+fw, fy+fh), (60, 60, 60), 1)
 
         if face is not None:
-            (x, y, w, h) = face
-            roi = cv2.resize(gray[y:y+h, x:x+w], (100, 100))
-            samples.append(roi)
-            labels.append(0)
+            aligned = _align_face(gray, face)
+            if aligned is not None:
+                samples.append(aligned)
+            else:
+                (x, y, w, h) = face
+                samples.append(cv2.resize(gray[y:y+h, x:x+w], (100, 100)))
             collected += 1
+            stall_counter = 0
 
-            # draw selected face in pink
+            # draw selected face
+            (x, y, w, h) = face
             cv2.rectangle(frame, (x, y), (x+w, y+h), (180, 105, 255), 3)
-            cv2.putText(frame, f"[YOU] {collected}/{n}", (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 105, 255), 2)
+            cv2.putText(frame, f"{pose_name}: {collected}/{n}", (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 105, 255), 2)
         else:
-            skipped += 1
-            cv2.putText(frame, "no face detected — come closer", (10, 60),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 100, 255), 2)
+            stall_counter += 1
+            if stall_counter > 15:
+                cv2.putText(frame, f"no face — adjust for '{pose_name}'", (10, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 100, 255), 2)
 
         # status bar
-        cv2.putText(frame, f"{phase_name}  {collected}/{n}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 105, 180), 2)
+        cv2.putText(frame, f"Enrolling: {pose_name}  {collected}/{n}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 105, 180), 2)
 
         cv2.imshow("Jarvis Enrollment", frame)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             print("[ENROLL] Cancelled.")
-            break
+            return samples, True
 
         time.sleep(0.04)
 
-    print(f"[ENROLL] Done: {collected} samples collected ✅")
-    return samples, labels
+    print(f"[ENROLL] Pose '{pose_name}': {collected} samples collected ✅")
+    return samples, False
+
+
+# ── Import shared helpers from webcam_recognition ────────────
+from webcam_recognition import (
+    _load_face_db,
+    _save_face_db,
+    _save_samples,
+    _rebuild_model,
+    _detect_eyes_in_face,
+    _align_face,
+    _augment_sample,
+)
 
 
 def main():
     # ── 🔐 PASSWORD GATE ─────────────────────────────────────
     from password_gate import attempt_unlock, MAX_ATTEMPTS
+    import getpass as _getpass  # FIX B20: use getpass to hide password input
     print("=" * 45)
     print("  🔐 JARVIS ENROLLMENT — PASSWORD REQUIRED")
     print("=" * 45)
     unlocked = False
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        pw = input(f"  Enter password (try {attempt}/{MAX_ATTEMPTS}): ").strip()
+        pw = _getpass.getpass(f"  Enter password (try {attempt}/{MAX_ATTEMPTS}): ").strip()
         if attempt_unlock(pw):
             print("  ✅ correct!! proceeding babe 💕\n")
             unlocked = True
@@ -131,17 +161,17 @@ def main():
         return
     # ─────────────────────────────────────────────────────────
 
-    # get name
-    name = "Charan"
+    # get name — FIX B21: use dynamic default based on system username
+    import getpass as _gp
+    _default_name = _gp.getuser() or "User"
     if os.path.exists(ENROLL_FILE):
         try:
             with open(ENROLL_FILE) as f:
-                name = json.load(f).get("name", "Charan")
+                _default_name = json.load(f).get("name", _default_name)
         except Exception:
             pass
-    entered = input(f"Enter ur name [{name}]: ").strip()
-    if entered:
-        name = entered
+    entered = input(f"Enter ur name [{_default_name}]: ").strip()
+    name = entered if entered else _default_name
 
     # ── Pause overlay if it's running so we don't fight for the camera ──
     overlay_was_running = False
@@ -173,17 +203,20 @@ def main():
         print("[ENROLL] ERROR: can't open webcam 😭")
         return
 
-    all_samples, all_labels = [], []
+    all_samples = []
 
-    # ── Phase 1: without glasses ──────────────────────────────
-    input("\n[ENROLL] PHASE 1: Take off glasses if u wear them → then press ENTER...")
-    s, l = collect_phase(cap, N_SAMPLES_EACH, "no glasses")
-    all_samples += s;  all_labels += l
+    # ── Multi-pose enrollment ──────────────────────────────────
+    print("\n[ENROLL] ====== MULTI-POSE ENROLLMENT ======")
+    print("[ENROLL] I'll guide u through 5 head positions for robust recognition!")
+    print("[ENROLL] Press Q anytime to cancel.")
 
-    # ── Phase 2: with glasses ─────────────────────────────────
-    input("\n[ENROLL] PHASE 2: Put glasses on → then press ENTER...")
-    s, l = collect_phase(cap, N_SAMPLES_EACH, "with glasses")
-    all_samples += s;  all_labels += l
+    cancelled = False
+    for pose_name, pose_count in ENROLL_POSES:
+        input(f"\n[ENROLL] Ready for '{pose_name}'? Press ENTER to start...")
+        samples, cancelled = collect_pose(cap, pose_count, pose_name)
+        all_samples.extend(samples)
+        if cancelled:
+            break
 
     cap.release()
     cv2.destroyAllWindows()
@@ -198,33 +231,52 @@ def main():
         except Exception as e:
             print(f"[ENROLL] couldn't resume overlay: {e}")
 
-    total = len(all_samples)
-    print(f"\n[ENROLL] Total samples: {total}")
-
-    if total < 30:
-        print(f"[ENROLL] Not enough samples ({total}) — need at least 30 😭")
+    if cancelled:
+        print("\n[ENROLL] Enrollment cancelled by user.")
         return
 
-    print("[ENROLL] Training LBPH model...")
-    recognizer = cv2.face.LBPHFaceRecognizer_create(
-        radius=2,        # slightly larger radius = more tolerant
-        neighbors=10,
-        grid_x=8,
-        grid_y=8
-    )
-    recognizer.train(all_samples, np.array(all_labels))
-    recognizer.save(MODEL_PATH)
+    raw_count = len(all_samples)
+    print(f"\n[ENROLL] Raw samples collected: {raw_count}")
 
-    meta = {
-        "name": name,
-        "samples": total,
-        "enrolled_at": datetime.now().isoformat()
-    }
-    with open(ENROLL_FILE, "w") as f:
-        json.dump(meta, f)
+    if raw_count < 20:
+        print(f"[ENROLL] Not enough samples ({raw_count}) — need at least 20 😭")
+        return
 
-    print(f"[ENROLL] ✅ Model saved! {total} samples for '{name}'")
-    print(f"[ENROLL] Now restart jarvis.py — she'll recognise u babe 💕")
+    # ── Augment samples ───────────────────────────────────────
+    print("[ENROLL] Augmenting samples (flip + rotation)...")
+    augmented = []
+    for s in all_samples:
+        augmented.extend(_augment_sample(s))
+    all_samples = augmented
+    total = len(all_samples)
+    print(f"[ENROLL] Augmented to {total} total samples ✅")
+
+    # ── Add to multi-person face database ──────────────────────
+    db = _load_face_db()
+
+    if name in db["persons"]:
+        label = db["persons"][name]["label"]
+        print(f"[ENROLL] re-enrolling '{name}' with existing label {label}")
+    else:
+        label = db["next_label"]
+        db["next_label"] += 1
+        db["persons"][name] = {"label": label, "sample_count": 0}
+        print(f"[ENROLL] new person '{name}' → label {label}")
+
+    # Save this person's samples, then rebuild the model from ALL persons
+    _save_samples(name, all_samples)
+    db["persons"][name]["sample_count"] = total
+    _save_face_db(db)
+
+    recognizer = _rebuild_model(db)
+    if recognizer is None:
+        print(f"[ENROLL] something went wrong training the model 😭")
+        return
+
+    persons_list = ', '.join(db['persons'].keys())
+    print(f"[ENROLL] ✅ Model saved! {total} samples (5 poses, augmented) for '{name}'")
+    print(f"[ENROLL] ✅ Now recognises: {persons_list}")
+    print(f"[ENROLL] Restart jarvis.py or it'll auto-pick up the new model 💕")
 
 
 if __name__ == "__main__":
